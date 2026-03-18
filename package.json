@@ -1,0 +1,18 @@
+{
+  "name": "r4v3",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.0.0",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:mobile": "pnpm --filter @r4v3/mobile start",
+    "ios": "pnpm --filter @r4v3/mobile ios",
+    "android": "pnpm --filter @r4v3/mobile android",
+    "typecheck": "pnpm --filter @r4v3/mobile typecheck"
+  },
+  "devDependencies": {
+    "eas-cli": "^18.4.0"
+  }
+}
