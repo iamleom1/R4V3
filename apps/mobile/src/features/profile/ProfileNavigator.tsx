@@ -1,14 +1,22 @@
 import React from "react";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { theme } from "../../theme";
+import { AdminAnalyticsScreen } from "./AdminAnalyticsScreen";
+import { EventCurationScreen } from "./EventCurationScreen";
 import { ModerationQueueScreen } from "./ModerationQueueScreen";
 import { ProfilePhotosScreen } from "./ProfilePhotosScreen";
 import { ProfileScreen } from "./ProfileScreen";
+import { ScraperStatusScreen } from "./ScraperStatusScreen";
+import { SystemAlertsScreen } from "./SystemAlertsScreen";
 
 export type ProfileStackParamList = {
   ProfileHome: undefined;
   ProfilePhotos: undefined;
   ModerationQueue: undefined;
+  AdminAnalytics: undefined;
+  EventCuration: undefined;
+  SystemAlerts: undefined;
+  ScraperStatus: undefined;
 };
 
 const Stack = createNativeStackNavigator<ProfileStackParamList>();
@@ -27,6 +35,10 @@ export function ProfileNavigator() {
       <Stack.Screen name="ProfileHome" component={ProfileScreen} options={{ title: "Profile" }} />
       <Stack.Screen name="ProfilePhotos" component={ProfilePhotosScreen} options={{ title: "Edit Photos" }} />
       <Stack.Screen name="ModerationQueue" component={ModerationQueueScreen} options={{ title: "Moderation" }} />
+      <Stack.Screen name="AdminAnalytics" component={AdminAnalyticsScreen} options={{ title: "Analytics" }} />
+      <Stack.Screen name="EventCuration" component={EventCurationScreen} options={{ title: "Event Curation" }} />
+      <Stack.Screen name="SystemAlerts" component={SystemAlertsScreen} options={{ title: "System Alerts" }} />
+      <Stack.Screen name="ScraperStatus" component={ScraperStatusScreen} options={{ title: "Scraper Status" }} />
     </Stack.Navigator>
   );
 }

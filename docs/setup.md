@@ -40,7 +40,7 @@ supabase link --project-ref <project-ref>
 supabase db push
 ```
 
-For release builds, do not store production values in tracked files. Use EAS secrets / environment variables instead.
+For release builds, do not store production values in tracked files. Use EAS environment variables instead.
 
 ## 4. What Is Included
 

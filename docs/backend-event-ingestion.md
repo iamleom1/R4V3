@@ -1,5 +1,7 @@
 # Backend Event Ingestion (Ticketmaster -> Supabase)
 
+For Playwright-backed `posh.vip` and server-rendered `dice.fm` ingestion, see [docs/edm-scraper-ingestion.md](/Users/iamleom/Desktop/R4V3/docs/edm-scraper-ingestion.md).
+
 ## What is deployed
 
 - Edge Function: `ingest-events`

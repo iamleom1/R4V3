@@ -10,7 +10,14 @@
     "dev:mobile": "pnpm --filter @r4v3/mobile start",
     "ios": "pnpm --filter @r4v3/mobile ios",
     "android": "pnpm --filter @r4v3/mobile android",
-    "typecheck": "pnpm --filter @r4v3/mobile typecheck"
+    "typecheck": "pnpm --filter @r4v3/mobile typecheck",
+    "ingest:edm": "node scripts/ingest-edm-events.mjs",
+    "healthcheck:edm": "node scripts/healthcheck-edm-ingest.mjs",
+    "run:edm:ingest": "node scripts/run-edm-job.mjs ingest",
+    "run:edm:healthcheck": "node scripts/run-edm-job.mjs healthcheck"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.56.1"
   },
   "devDependencies": {
     "eas-cli": "^18.4.0"

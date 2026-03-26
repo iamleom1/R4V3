@@ -1,0 +1,44 @@
+name: EDM Ingest
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
+
+jobs:
+  ingest-edm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      EDM_LOG_RETENTION_DAYS: "14"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run EDM ingest
+        run: pnpm run:edm:ingest
+
+      - name: Upload ingest logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: edm-ingest-logs
+          path: logs/edm/ingest
+          if-no-files-found: ignore
+          retention-days: 14

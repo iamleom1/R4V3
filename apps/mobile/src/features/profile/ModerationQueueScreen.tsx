@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import { theme } from "../../theme";
-import { listModerationQueue, type ModerationQueueItem, updateReportStatus } from "./moderationRepository";
+import { listModerationQueue, moderateProfileAction, type ModerationQueueItem, updateReportStatus } from "./moderationRepository";
 
 const filters: Array<ModerationQueueItem["queueStatus"] | "all"> = ["all", "queued", "in_review", "resolved", "dismissed"];
 
@@ -46,6 +46,42 @@ export function ModerationQueueScreen() {
       Alert.alert("Update failed", result.error);
       return;
     }
+    void load(true);
+  }
+
+  async function handleProfileAction(
+    item: ModerationQueueItem,
+    actionType: "hide_profile" | "unhide_profile" | "suspend_profile" | "unsuspend_profile"
+  ) {
+    if (!item.targetProfileId) {
+      Alert.alert("No target profile", "This report does not point to a profile.");
+      return;
+    }
+
+    const suspendUntil =
+      actionType === "suspend_profile"
+        ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+        : null;
+
+    const result = await moderateProfileAction({
+      targetProfileId: item.targetProfileId,
+      actionType,
+      note: `${item.reportCategory}: ${item.reportDetails ?? "moderation action"}`,
+      suspendUntil
+    });
+    if (!result.ok) {
+      Alert.alert("Action failed", result.error);
+      return;
+    }
+    const confirmationMessage =
+      actionType === "hide_profile"
+        ? "Profile hidden."
+        : actionType === "unhide_profile"
+          ? "Profile restored to discovery."
+          : actionType === "unsuspend_profile"
+            ? "Profile suspension removed."
+            : "Profile suspended for 7 days.";
+    Alert.alert("Profile updated", confirmationMessage);
     void load(true);
   }
 
@@ -118,6 +154,13 @@ export function ModerationQueueScreen() {
             Reporter: {item.reporterDisplayName}
             {item.targetDisplayName ? `  Target: ${item.targetDisplayName}` : ""}
           </Text>
+          {item.targetProfileId ? (
+            <Text style={styles.cardState}>
+              State: {item.targetIsHidden ? "Hidden" : "Visible"}
+              {"  "}
+              {item.targetIsSuspended ? `Suspended${item.targetSuspendedUntil ? ` until ${formatTimestamp(item.targetSuspendedUntil)}` : ""}` : "Active"}
+            </Text>
+          ) : null}
           {item.reportDetails ? <Text style={styles.cardBody}>{item.reportDetails}</Text> : null}
           {item.messageBody ? <Text style={styles.messageQuote} numberOfLines={3}>“{item.messageBody}”</Text> : null}
 
@@ -130,6 +173,20 @@ export function ModerationQueueScreen() {
             ) : null}
             {item.queueStatus !== "dismissed" ? (
               <ActionButton label="Dismiss" variant="ghost" onPress={() => void handleStatusUpdate(item, "dismissed")} />
+            ) : null}
+            {item.targetProfileId ? (
+              <ActionButton
+                label={item.targetIsHidden ? "Unhide Profile" : "Hide Profile"}
+                variant="ghost"
+                onPress={() => void handleProfileAction(item, item.targetIsHidden ? "unhide_profile" : "hide_profile")}
+              />
+            ) : null}
+            {item.targetProfileId ? (
+              <ActionButton
+                label={item.targetIsSuspended ? "Unsuspend" : "Suspend 7d"}
+                variant="ghost"
+                onPress={() => void handleProfileAction(item, item.targetIsSuspended ? "unsuspend_profile" : "suspend_profile")}
+              />
             ) : null}
           </View>
         </View>
@@ -298,6 +355,10 @@ const styles = StyleSheet.create({
     textTransform: "capitalize"
   },
   cardMeta: {
+    color: theme.colors.textSecondary,
+    ...theme.type.caption
+  },
+  cardState: {
     color: theme.colors.textSecondary,
     ...theme.type.caption
   },

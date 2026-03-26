@@ -27,7 +27,7 @@ const heightOptions = buildHeightOptions();
 export function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<NativeStackNavigationProp<ProfileStackParamList>>();
-  const { session, profileDraft, profileSaveStatus, profileSaveError, updateProfileDraft, saveProfileDraft, signOut } = useAppState();
+  const { session, profileDraft, profileSaveStatus, profileSaveError, updateProfileDraft, saveProfileDraft, signOut, deleteAccount } = useAppState();
   const [photoSlots, setPhotoSlots] = useState<Array<ProfilePhoto | null>>([null, null, null, null, null, null]);
   const [isCapturingLocation, setIsCapturingLocation] = useState(false);
   const scrollRef = useRef<ScrollView | null>(null);
@@ -37,6 +37,9 @@ export function ProfileScreen() {
   const [activePicker, setActivePicker] = useState<null | "height" | "pronouns" | "gender" | "smoking" | "drinking">(null);
   const [isZodiacModalOpen, setIsZodiacModalOpen] = useState(false);
   const [isModerator, setIsModerator] = useState(false);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [deleteConfirmationText, setDeleteConfirmationText] = useState("");
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const isNameLocked = profileDraft.onboardingCompleted && profileDraft.displayName.trim().length > 0;
   const isAgeLocked = profileDraft.onboardingCompleted && profileDraft.birthdate.trim().length > 0;
   const hasPhoto = photoSlots.some((slot) => Boolean(slot));
@@ -225,6 +228,26 @@ export function ProfileScreen() {
       ? selectedZodiacSigns.filter((value) => value !== sign)
       : [...selectedZodiacSigns, sign];
     updateProfileDraft({ zodiac: next.join(", ") });
+  }
+
+  async function handleDeleteAccount() {
+    if (deleteConfirmationText.trim().toUpperCase() !== "DELETE") {
+      Alert.alert("Confirmation required", "Type DELETE to confirm permanent account deletion.");
+      return;
+    }
+
+    setIsDeletingAccount(true);
+    const result = await deleteAccount();
+    setIsDeletingAccount(false);
+
+    if (!result.ok) {
+      Alert.alert("Delete failed", result.error ?? "Failed to delete account.");
+      return;
+    }
+
+    setDeleteConfirmationText("");
+    setIsDeleteModalOpen(false);
+    Alert.alert("Account deleted", "Your account and related data were permanently removed.");
   }
 
   return (
@@ -428,16 +451,40 @@ export function ProfileScreen() {
         {profileSaveStatus === "saved" ? <Text style={styles.successText}>Profile saved.</Text> : null}
         {profileSaveError ? <Text style={styles.errorText}>{profileSaveError}</Text> : null}
         {crewReadinessLockedReason ? <Text style={styles.panelFootnote}>{crewReadinessLockedReason}</Text> : null}
+        <Text style={styles.panelFootnote}>Sign out if you just need a break. Deleting your account permanently removes your profile, photos, RSVPs, matches, and messages.</Text>
 
         <View style={styles.buttonStack}>
           {isModerator ? (
-            <Button label="Moderation Queue" variant="secondary" onPress={() => navigation.navigate("ModerationQueue")} />
+            <>
+              <Button label="Moderation Queue" variant="secondary" onPress={() => navigation.navigate("ModerationQueue")} />
+              <Button label="Analytics" variant="secondary" onPress={() => navigation.navigate("AdminAnalytics")} />
+              <Button label="Event Curation" variant="secondary" onPress={() => navigation.navigate("EventCuration")} />
+              <Button label="Scraper Status" variant="secondary" onPress={() => navigation.navigate("ScraperStatus")} />
+              <Button label="System Alerts" variant="secondary" onPress={() => navigation.navigate("SystemAlerts")} />
+            </>
           ) : null}
           <Button label="Save Profile" onPress={() => void saveProfileDraft()} />
           <Button label="Sign Out" variant="ghost" onPress={() => void signOut()} />
+          <Button
+            label="Delete Account"
+            variant="ghost"
+            onPress={() => setIsDeleteModalOpen(true)}
+          />
         </View>
       </Panel>
     </ScrollView>
+    <DeleteAccountModal
+      visible={isDeleteModalOpen}
+      value={deleteConfirmationText}
+      isDeleting={isDeletingAccount}
+      onChangeText={setDeleteConfirmationText}
+      onClose={() => {
+        if (isDeletingAccount) return;
+        setDeleteConfirmationText("");
+        setIsDeleteModalOpen(false);
+      }}
+      onConfirm={() => void handleDeleteAccount()}
+    />
     </KeyboardAvoidingView>
   );
 }
@@ -593,6 +640,54 @@ function ZodiacMultiSelectModal(props: {
               );
             })}
           </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function DeleteAccountModal(props: {
+  visible: boolean;
+  value: string;
+  isDeleting: boolean;
+  onChangeText: (value: string) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Modal visible={props.visible} transparent animationType="slide" onRequestClose={props.onClose}>
+      <View style={styles.modalScrim}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={props.onClose} />
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Delete account</Text>
+            <Pressable onPress={props.onClose} style={styles.modalCloseBtn} disabled={props.isDeleting}>
+              <Text style={styles.modalCloseText}>Cancel</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.deleteModalBody}>
+            <Text style={styles.deleteModalBodyText}>
+              This permanently deletes your profile, photos, RSVPs, matches, and messages. Type DELETE to continue.
+            </Text>
+            <TextInput
+              value={props.value}
+              onChangeText={props.onChangeText}
+              placeholder="Type DELETE"
+              placeholderTextColor="rgba(255,249,239,0.36)"
+              autoCapitalize="characters"
+              autoCorrect={false}
+              editable={!props.isDeleting}
+              style={styles.deleteModalInput}
+            />
+            <Button
+              label={props.isDeleting ? "Deleting..." : "Permanently Delete"}
+              variant="ghost"
+              loading={props.isDeleting}
+              disabled={props.value.trim().toUpperCase() !== "DELETE"}
+              onPress={props.onConfirm}
+            />
+          </View>
         </View>
       </View>
     </Modal>
@@ -1018,6 +1113,26 @@ const styles = StyleSheet.create({
   modalOptionsContent: {
     padding: 12,
     gap: 8
+  },
+  deleteModalBody: {
+    padding: 14,
+    gap: 12
+  },
+  deleteModalBodyText: {
+    color: "rgba(255,249,239,0.72)",
+    fontSize: 13,
+    lineHeight: 19
+  },
+  deleteModalInput: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "#14110D",
+    color: "#FFF8EE",
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    fontWeight: "700",
+    letterSpacing: 0.8
   },
   modalOptionRow: {
     borderRadius: 14,

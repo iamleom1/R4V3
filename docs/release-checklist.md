@@ -3,15 +3,16 @@
 ## Current baseline
 
 - Mobile app builds with Expo SDK 54 and passes `pnpm typecheck`.
-- Supabase migrations are synced through `0011`.
+- Supabase migrations are synced through `0014`.
 - Backend functions deployed: `ingest-events`, `prune-events`.
-- Core MVP flows exist: auth, onboarding, profile, event RSVP, crew matching, chat, reporting, moderation queue.
+- Core MVP flows exist: auth, onboarding, profile, event RSVP, crew matching, chat, reporting, moderation queue, and curated event management.
 
 ## Blocking items before beta
 
-- [ ] Configure EAS credentials and run a real device build using `eas build --profile preview`.
+- [x] Configure EAS credentials and complete Android preview builds from `apps/mobile` using `eas build --profile preview`.
+- [ ] Complete iOS preview builds from `apps/mobile` once Apple Developer access is available.
 - [x] Replace embedded API keys with env-driven Expo config in [app.config.ts](/Users/iamleom/Desktop/R4V3/apps/mobile/app.config.ts).
-- [ ] Set real EAS secrets / environment variables before any preview or production build.
+- [x] Set real EAS environment variables for the `preview` environment before preview builds.
 - [ ] Add production app icons, splash image, and adaptive icon assets.
 - [ ] Run a full QA sweep on iPhone and Android for:
 - auth sign-in/sign-out
@@ -32,14 +33,18 @@
 ## Build / config requirements
 
 - [x] `eas.json` exists at repo root.
+- [x] `apps/mobile/eas.json` exists for app-directory EAS builds in the monorepo.
 - [x] `runtimeVersion` and OTA updates policy are configured in [app.config.ts](/Users/iamleom/Desktop/R4V3/apps/mobile/app.config.ts).
 - [x] `ios.buildNumber` and `android.versionCode` are present in [app.config.ts](/Users/iamleom/Desktop/R4V3/apps/mobile/app.config.ts).
+- [x] Expo owner and EAS project ID are wired in [app.config.ts](/Users/iamleom/Desktop/R4V3/apps/mobile/app.config.ts).
 - [ ] Add final icon paths once assets exist.
 - [ ] If you use production deep links, add associated domains / Android intent filters.
 
 ## Backend / ops requirements
 
+- [x] Keep backend migrations synced to remote.
 - [ ] Configure scheduled runs for `ingest-events` and `prune-events` in Supabase Dashboard.
+- [x] Manual/curated events are supported in the backend and moderator UI.
 - [ ] Add crash reporting.
 - [ ] Add analytics funnel events.
 - [ ] Verify backup / rollback process for migrations.
@@ -51,10 +56,17 @@
 pnpm install
 pnpm typecheck
 cp apps/mobile/.env.example apps/mobile/.env
-eas build:configure
+cd apps/mobile
 eas build --platform ios --profile preview
 eas build --platform android --profile preview
 ```
+
+## Current EAS status
+
+- `preview` environment exists and includes the required Supabase and Ticketmaster values.
+- `apps/mobile` is now wired to Expo owner `r4v3` and EAS project `4652ccde-861e-4de9-82d3-35b040734568`.
+- Android preview build path is working from `apps/mobile`.
+- iOS preview builds are still blocked on Apple Developer account access / credentials.
 
 ## Definition of done for first closed beta
 

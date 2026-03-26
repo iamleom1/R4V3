@@ -106,6 +106,20 @@ export async function upsertProfileDraftToSupabase(userId: string, draft: Profil
   return { ok: true as const };
 }
 
+export async function deleteMyAccountFromSupabase() {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false as const, error: "Supabase is not configured." };
+  }
+
+  const { data, error } = await (supabase.rpc as any)("delete_my_account");
+  if (error || !data) {
+    return { ok: false as const, error: error?.message ?? "Failed to delete account." };
+  }
+
+  return { ok: true as const };
+}
+
 function mapRowToDraft(row: ProfileRow): Partial<ProfileDraft> {
   return {
     displayName: row.display_name ?? "",

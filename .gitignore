@@ -10,4 +10,5 @@ coverage
 !.env.example
 apps/mobile/.expo
 apps/mobile/node_modules
-
+logs/**/*.log
+logs/**/*.json

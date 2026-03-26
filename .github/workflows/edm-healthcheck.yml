@@ -1,0 +1,52 @@
+name: EDM Healthcheck
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 * * * *"
+
+jobs:
+  healthcheck-edm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      ALERT_EMAIL_FROM: ${{ secrets.ALERT_EMAIL_FROM }}
+      ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+      EDM_HEALTHCHECK_MAX_RUN_AGE_HOURS: ${{ vars.EDM_HEALTHCHECK_MAX_RUN_AGE_HOURS || '8' }}
+      EDM_HEALTHCHECK_MIN_FETCHED: ${{ vars.EDM_HEALTHCHECK_MIN_FETCHED || '4' }}
+      EDM_HEALTHCHECK_MIN_POSH_UPCOMING: ${{ vars.EDM_HEALTHCHECK_MIN_POSH_UPCOMING || '2' }}
+      EDM_HEALTHCHECK_MIN_DICE_UPCOMING: ${{ vars.EDM_HEALTHCHECK_MIN_DICE_UPCOMING || '1' }}
+      EDM_LOG_RETENTION_DAYS: "14"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run EDM healthcheck
+        run: pnpm run:edm:healthcheck
+
+      - name: Upload healthcheck logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: edm-healthcheck-logs
+          path: logs/edm/healthcheck
+          if-no-files-found: ignore
+          retention-days: 14
