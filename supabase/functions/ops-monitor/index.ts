@@ -44,6 +44,7 @@ Deno.serve(async (req) => {
     });
 
     const alerts: Array<Record<string, unknown>> = [];
+    const activeAlertKeys = new Set<string>();
 
     const [{ data: jobRuns }, { count: upcomingEventsCount }] = await Promise.all([
       (admin.from("job_runs") as any)
@@ -91,6 +92,7 @@ Deno.serve(async (req) => {
     const latestEdmRun = latestByJob.get("ingest-edm-events");
     const latestEdmFetched = Number(latestEdmRun?.details?.fetched ?? 0);
     if (latestEdmRun?.status === "success" && latestEdmFetched < minimumEdmFetched) {
+      activeAlertKeys.add(issueKey("edm_scraper_volume", "EDM ingest fetched count below threshold"));
       await (admin.rpc as any)("create_system_alert", {
         p_category: "edm_scraper_volume",
         p_severity: "warning",
@@ -130,6 +132,7 @@ Deno.serve(async (req) => {
     ]);
 
     if ((upcomingPoshCount ?? 0) < minimumUpcomingPoshEvents) {
+      activeAlertKeys.add(issueKey("edm_scraper_inventory", "Upcoming Posh events below threshold"));
       await (admin.rpc as any)("create_system_alert", {
         p_category: "edm_scraper_inventory",
         p_severity: "warning",
@@ -143,6 +146,7 @@ Deno.serve(async (req) => {
     }
 
     if ((upcomingDiceCount ?? 0) < minimumUpcomingDiceEvents) {
+      activeAlertKeys.add(issueKey("edm_scraper_inventory", "Upcoming DICE events below threshold"));
       await (admin.rpc as any)("create_system_alert", {
         p_category: "edm_scraper_inventory",
         p_severity: "warning",
@@ -154,6 +158,32 @@ Deno.serve(async (req) => {
       });
       alerts.push({ type: "edm_dice_inventory", upcomingDiceCount: upcomingDiceCount ?? 0 });
     }
+
+    const edmJobIssues = [
+      {
+        triggered:
+          !latestEdmRun ||
+          latestEdmRun.status !== "success" ||
+          (latestEdmRun?.created_at
+            ? (Date.now() - new Date(latestEdmRun.created_at).getTime()) / (1000 * 60 * 60) > maxEdmIngestAgeHours
+            : true),
+        category: "edm_scraper_job_health",
+        message:
+          !latestEdmRun
+            ? "EDM ingest has never run"
+            : latestEdmRun.status !== "success"
+              ? "EDM ingest latest run failed"
+              : "EDM ingest is stale"
+      }
+    ];
+
+    for (const issue of edmJobIssues) {
+      if (issue.triggered) {
+        activeAlertKeys.add(issueKey(issue.category, issue.message));
+      }
+    }
+
+    await resolveRecoveredEdmAlerts(admin, activeAlertKeys);
 
     await (admin.rpc as any)("record_job_run", {
       p_job_name: "ops-monitor",
@@ -183,4 +213,33 @@ function json(payload: unknown, status = 200) {
       "Content-Type": "application/json"
     }
   });
+}
+
+function issueKey(category: string, message: string) {
+  return `${category}::${message}`;
+}
+
+async function resolveRecoveredEdmAlerts(
+  admin: ReturnType<typeof createClient>,
+  activeAlertKeys: Set<string>
+) {
+  const resolvableAlerts = [
+    { category: "edm_scraper_job_health", message: "EDM ingest has never run" },
+    { category: "edm_scraper_job_health", message: "EDM ingest latest run failed" },
+    { category: "edm_scraper_job_health", message: "EDM ingest is stale" },
+    { category: "edm_scraper_volume", message: "EDM ingest fetched count below threshold" },
+    { category: "edm_scraper_inventory", message: "Upcoming Posh events below threshold" },
+    { category: "edm_scraper_inventory", message: "Upcoming DICE events below threshold" }
+  ];
+
+  for (const issue of resolvableAlerts) {
+    if (activeAlertKeys.has(issueKey(issue.category, issue.message))) {
+      continue;
+    }
+
+    await (admin.rpc as any)("resolve_system_alert_by_message", {
+      p_category: issue.category,
+      p_message: issue.message
+    });
+  }
 }

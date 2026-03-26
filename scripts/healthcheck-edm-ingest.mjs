@@ -13,6 +13,7 @@ async function main() {
   const latestRun = await fetchLatestRun();
   const sourceCounts = await fetchUpcomingCounts();
   const issues = evaluateHealth(latestRun, sourceCounts);
+  const activeIssueKeys = new Set(issues.map(toIssueKey));
 
   const payload = {
     ok: issues.length === 0,
@@ -21,6 +22,8 @@ async function main() {
     sourceCounts,
     issues
   };
+
+  await resolveRecoveredAlerts(activeIssueKeys);
 
   if (issues.length === 0) {
     console.log(JSON.stringify(payload, null, 2));
@@ -152,6 +155,32 @@ async function createAlert(issue, payload) {
   } catch {
     // Alerts are best effort here; notification outputs still carry the failure.
   }
+}
+
+async function resolveRecoveredAlerts(activeIssueKeys) {
+  const resolvableAlerts = [
+    { category: "edm_scraper_job_health", message: "EDM ingest has never run" },
+    { category: "edm_scraper_job_health", message: "EDM ingest latest run failed" },
+    { category: "edm_scraper_job_health", message: "EDM ingest is stale" },
+    { category: "edm_scraper_volume", message: "EDM ingest fetched count below threshold" },
+    { category: "edm_scraper_inventory", message: "Upcoming Posh events below threshold" },
+    { category: "edm_scraper_inventory", message: "Upcoming DICE events below threshold" }
+  ];
+
+  await Promise.all(
+    resolvableAlerts
+      .filter((issue) => !activeIssueKeys.has(toIssueKey(issue)))
+      .map(async (issue) => {
+        await supabase.rpc("resolve_system_alert_by_message", {
+          p_category: issue.category,
+          p_message: issue.message
+        }).catch(() => {});
+      })
+  );
+}
+
+function toIssueKey(issue) {
+  return `${issue.category}::${issue.message}`;
 }
 
 async function sendSlackAlert(payload) {
