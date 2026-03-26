@@ -171,10 +171,14 @@ async function resolveRecoveredAlerts(activeIssueKeys) {
     resolvableAlerts
       .filter((issue) => !activeIssueKeys.has(toIssueKey(issue)))
       .map(async (issue) => {
-        await supabase.rpc("resolve_system_alert_by_message", {
-          p_category: issue.category,
-          p_message: issue.message
-        }).catch(() => {});
+        try {
+          await supabase.rpc("resolve_system_alert_by_message", {
+            p_category: issue.category,
+            p_message: issue.message
+          });
+        } catch {
+          // Best effort cleanup. Healthcheck should still continue.
+        }
       })
   );
 }
