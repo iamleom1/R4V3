@@ -1,0 +1,14 @@
+<svg width="1200" height="1500" viewBox="0 0 1200 1500" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="1500" fill="#09111F"/>
+  <rect x="70" y="70" width="1060" height="1360" rx="56" fill="url(#paint0_linear)"/>
+  <circle cx="600" cy="520" r="190" fill="#C7D9F6" fill-opacity="0.92"/>
+  <path d="M320 1146C320 985.838 449.838 856 610 856H590C750.162 856 880 985.838 880 1146V1210H320V1146Z" fill="#D8E6FA" fill-opacity="0.92"/>
+  <text x="600" y="1288" fill="#DCEBFF" font-family="Arial, sans-serif" font-size="54" font-weight="700" text-anchor="middle">Replace With Your Headshot</text>
+  <text x="600" y="1354" fill="#9DB7D8" font-family="Arial, sans-serif" font-size="30" text-anchor="middle">public/headshot-placeholder.svg</text>
+  <defs>
+    <linearGradient id="paint0_linear" x1="156" y1="134" x2="1040" y2="1384" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#14325E"/>
+      <stop offset="1" stop-color="#0B172B"/>
+    </linearGradient>
+  </defs>
+</svg>
