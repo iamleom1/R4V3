@@ -14,6 +14,7 @@ function readIntEnv(name: string, fallback: number) {
 const config: ExpoConfig = {
   name: "R4V3",
   slug: "r4v3",
+  owner: "r4v3",
   scheme: "r4v3",
   version: "0.1.0",
   runtimeVersion: {
@@ -31,7 +32,7 @@ const config: ExpoConfig = {
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,
       NSPhotoLibraryUsageDescription: "R4V3 uses your photo library so you can upload profile photos.",
-      NSLocationWhenInUseUsageDescription: "R4V3 uses your location to show nearby rave community matches."
+      NSLocationWhenInUseUsageDescription: "R4V3 uses your location to show nearby events and let you filter discovery by distance."
     },
     bundleIdentifier: readEnv("EXPO_IOS_BUNDLE_IDENTIFIER", "com.r4v3.app")
   },
@@ -40,7 +41,11 @@ const config: ExpoConfig = {
     permissions: ["ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION"],
     package: readEnv("EXPO_ANDROID_PACKAGE", "com.r4v3.app")
   },
+  plugins: ["@react-native-community/datetimepicker", "expo-notifications"],
   extra: {
+    eas: {
+      projectId: "4652ccde-861e-4de9-82d3-35b040734568"
+    },
     supabaseUrl: readEnv("EXPO_PUBLIC_SUPABASE_URL"),
     supabaseAnonKey: readEnv("EXPO_PUBLIC_SUPABASE_ANON_KEY"),
     ticketmasterApiKey: readEnv("EXPO_PUBLIC_TICKETMASTER_API_KEY"),

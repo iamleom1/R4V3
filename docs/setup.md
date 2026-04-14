@@ -1,4 +1,4 @@
-# Setup Guide (Phase 2 Bootstrap)
+# Setup Guide
 
 ## 1. Install Dependencies
 
@@ -53,11 +53,20 @@ For release builds, do not store production values in tracked files. Use EAS env
   - swipes/matches/messages
   - blocks/reports/moderation queue
 
-## 5. Next Build Step
+## 5. Current Product Surface
 
-Implement M2:
+The app already includes:
 
-- auth session provider
-- onboarding wizard (age gate, guidelines consent)
-- profile editor + photo uploads (Supabase Storage)
-- persist onboarding profile data to Supabase (`profiles` upsert)
+- auth and session restore
+- onboarding and profile editing
+- photo upload flows
+- event discovery, RSVP, and crew visibility
+- crew matching, direct chat, and group chat
+- moderation, analytics, and system alerts
+
+The main remaining work is release hardening:
+
+- physical-device QA
+- production metadata and policy hosting
+- migration rollback validation
+- staged build verification

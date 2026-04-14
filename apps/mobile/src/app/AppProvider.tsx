@@ -1,13 +1,16 @@
-import React, { createContext, PropsWithChildren, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, PropsWithChildren, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 
 import { getSupabaseClient } from "../lib/supabase";
 import {
   ensureProfileStubInSupabase,
+  deleteMyAccountFromSupabase,
   loadProfileDraftFromSupabase,
   upsertProfileDraftToSupabase
 } from "../features/profile/profileRepository";
 import { validateProfileDraft } from "../features/profile/profileDraftService";
+import { registerDevicePushToken, unregisterDevicePushToken } from "../lib/pushNotifications";
+import { installCrashReporting, installUnhandledRejectionReporting, recordError, trackEvent } from "../lib/telemetry";
 
 export type AuthStatus = "loading" | "signed_out" | "authenticated";
 
@@ -17,6 +20,9 @@ export type ProfileDraft = {
   city: string;
   bio: string;
   gender: string;
+  interestedGenders: string[];
+  preferredAgeMin: number | null;
+  preferredAgeMax: number | null;
   height: string;
   zodiac: string;
   education: string;
@@ -47,7 +53,7 @@ export type MatchFiltersDraft = {
   groupPreference: "all" | "groups" | "individuals";
 };
 
-type AppStateValue = {
+export type AppStateValue = {
   authStatus: AuthStatus;
   session: Session | null;
   profileHydrationComplete: boolean;
@@ -57,9 +63,10 @@ type AppStateValue = {
   matchFilters: MatchFiltersDraft;
   signInDemo: (email: string) => void;
   signOut: () => Promise<void>;
+  deleteAccount: () => Promise<{ ok: boolean; error?: string }>;
   updateProfileDraft: (patch: Partial<ProfileDraft>) => void;
   updateMatchFilters: (patch: Partial<MatchFiltersDraft>) => void;
-  saveProfileDraft: (options?: { requireFullValidation?: boolean; markOnboardingComplete?: boolean }) => Promise<boolean>;
+  saveProfileDraft: (options?: { requireFullValidation?: boolean; markOnboardingComplete?: boolean; draftOverride?: ProfileDraft }) => Promise<boolean>;
   completeOnboarding: () => Promise<boolean>;
 };
 
@@ -69,6 +76,9 @@ const defaultProfileDraft: ProfileDraft = {
   city: "",
   bio: "",
   gender: "",
+  interestedGenders: [],
+  preferredAgeMin: 21,
+  preferredAgeMax: 35,
   height: "",
   zodiac: "",
   education: "",
@@ -109,6 +119,12 @@ export function AppProvider({ children }: PropsWithChildren) {
   const [profileSaveStatus, setProfileSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [profileSaveError, setProfileSaveError] = useState<string | null>(null);
   const [matchFilters, setMatchFilters] = useState<MatchFiltersDraft>(defaultMatchFilters);
+  const pushProfileIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    installCrashReporting();
+    installUnhandledRejectionReporting();
+  }, []);
 
   useEffect(() => {
     const supabase = getSupabaseClient();
@@ -126,12 +142,18 @@ export function AppProvider({ children }: PropsWithChildren) {
       setSession(data.session);
       setProfileHydrationComplete(!data.session);
       setAuthStatus(data.session ? "authenticated" : "signed_out");
+      if (data.session) {
+        void trackEvent("auth_session_restored", { source: "app_boot" });
+      }
     });
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession);
       setProfileHydrationComplete(!nextSession);
       setAuthStatus(nextSession ? "authenticated" : "signed_out");
+      if (nextSession) {
+        void trackEvent("auth_authenticated", { source: "auth_state_change" });
+      }
     });
 
     return () => {
@@ -155,6 +177,7 @@ export function AppProvider({ children }: PropsWithChildren) {
       });
 
       if (!ensure.ok) {
+        void recordError(ensure.error, { source: "ensure_profile_stub" });
         setProfileSaveStatus("error");
         setProfileSaveError(ensure.error);
         setProfileHydrationComplete(true);
@@ -175,6 +198,44 @@ export function AppProvider({ children }: PropsWithChildren) {
     }
 
     void hydrateProfile();
+  }, [session?.user?.id]);
+
+  useEffect(() => {
+    let active = true;
+
+    async function syncPushToken() {
+      const nextProfileId = session?.user?.id ?? null;
+      const previousProfileId = pushProfileIdRef.current;
+
+      if (!nextProfileId) {
+        if (previousProfileId) {
+          await unregisterDevicePushToken(previousProfileId);
+        }
+        if (active) {
+          pushProfileIdRef.current = null;
+        }
+        return;
+      }
+
+      if (previousProfileId && previousProfileId !== nextProfileId) {
+        await unregisterDevicePushToken(previousProfileId);
+      }
+
+      const result = await registerDevicePushToken(nextProfileId);
+      if (!result.ok) {
+        void trackEvent("push_token_registration_skipped", { reason: result.error });
+        return;
+      }
+
+      if (active) {
+        pushProfileIdRef.current = nextProfileId;
+      }
+    }
+
+    void syncPushToken();
+    return () => {
+      active = false;
+    };
   }, [session?.user?.id]);
 
   async function persistProfileDraft(
@@ -205,6 +266,7 @@ export function AppProvider({ children }: PropsWithChildren) {
 
     const result = await upsertProfileDraftToSupabase(session.user.id, nextDraft);
     if (!result.ok) {
+      void recordError(result.error, { source: "save_profile_draft" });
       setProfileSaveStatus("error");
       setProfileSaveError(result.error);
       return false;
@@ -239,6 +301,19 @@ export function AppProvider({ children }: PropsWithChildren) {
         setProfileSaveStatus("idle");
         setProfileSaveError(null);
       },
+      deleteAccount: async () => {
+        const result = await deleteMyAccountFromSupabase();
+        if (!result.ok) {
+          void recordError(result.error, { source: "delete_account" });
+          return result;
+        }
+        setSession(null);
+        setAuthStatus("signed_out");
+        setProfileDraft(defaultProfileDraft);
+        setProfileSaveStatus("idle");
+        setProfileSaveError(null);
+        return result;
+      },
       updateProfileDraft: (patch) => {
         setProfileDraft((prev) => ({ ...prev, ...patch }));
         setProfileSaveStatus("idle");
@@ -248,13 +323,20 @@ export function AppProvider({ children }: PropsWithChildren) {
         setMatchFilters((prev) => ({ ...prev, ...patch }));
       },
       saveProfileDraft: async (options) => {
-        return persistProfileDraft(profileDraft, options);
+        return persistProfileDraft(options?.draftOverride ?? profileDraft, options);
       },
       completeOnboarding: async () => {
-        return persistProfileDraft(profileDraft, {
+        const ok = await persistProfileDraft(profileDraft, {
           requireFullValidation: true,
           markOnboardingComplete: true
         });
+        if (ok) {
+          void trackEvent("onboarding_completed", {
+            vibe_count: profileDraft.vibeTags.length,
+            genre_count: profileDraft.musicGenres.length
+          });
+        }
+        return ok;
       }
     }),
     [authStatus, matchFilters, profileDraft, profileHydrationComplete, profileSaveError, profileSaveStatus, session]

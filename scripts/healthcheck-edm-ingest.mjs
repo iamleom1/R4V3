@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { analyzeEventQuality } from "./lib/event-quality.mjs";
 
 const supabase = createClient(requireEnv("SUPABASE_URL"), requireEnv("SUPABASE_SERVICE_ROLE_KEY"), {
   auth: { persistSession: false, autoRefreshToken: false }
@@ -8,11 +9,16 @@ const MAX_RUN_AGE_HOURS = clampInteger(process.env.EDM_HEALTHCHECK_MAX_RUN_AGE_H
 const MIN_FETCHED_EVENTS = clampInteger(process.env.EDM_HEALTHCHECK_MIN_FETCHED, 4, 0, 1000);
 const MIN_POSH_UPCOMING = clampInteger(process.env.EDM_HEALTHCHECK_MIN_POSH_UPCOMING, 2, 0, 1000);
 const MIN_DICE_UPCOMING = clampInteger(process.env.EDM_HEALTHCHECK_MIN_DICE_UPCOMING, 1, 0, 1000);
-
+const MIN_POSH_FETCHED_PER_RUN = clampInteger(process.env.EDM_HEALTHCHECK_MIN_POSH_FETCHED_PER_RUN, 1, 0, 1000);
+const MIN_DICE_FETCHED_PER_RUN = clampInteger(process.env.EDM_HEALTHCHECK_MIN_DICE_FETCHED_PER_RUN, 1, 0, 1000);
+const MAX_DUPLICATE_EVENTS = clampInteger(process.env.EDM_HEALTHCHECK_MAX_DUPLICATES, 0, 0, 1000);
+const MAX_BAD_EVENTS = clampInteger(process.env.EDM_HEALTHCHECK_MAX_BAD_EVENTS, 0, 0, 1000);
 async function main() {
-  const latestRun = await fetchLatestRun();
+  const latestRun = await fetchLatestRun("ingest-edm-events");
   const sourceCounts = await fetchUpcomingCounts();
-  const issues = evaluateHealth(latestRun, sourceCounts);
+  const upcomingEvents = await fetchUpcomingImportedEvents();
+  const quality = analyzeEventQuality(upcomingEvents);
+  const issues = evaluateHealth(latestRun, sourceCounts, quality);
   const activeIssueKeys = new Set(issues.map(toIssueKey));
 
   const payload = {
@@ -20,6 +26,7 @@ async function main() {
     checkedAt: new Date().toISOString(),
     latestRun,
     sourceCounts,
+    quality,
     issues
   };
 
@@ -38,11 +45,11 @@ async function main() {
   process.exitCode = 1;
 }
 
-async function fetchLatestRun() {
+async function fetchLatestRun(jobName) {
   const { data, error } = await supabase
     .from("job_runs")
     .select("job_name,status,details,created_at")
-    .eq("job_name", "ingest-edm-events")
+    .eq("job_name", jobName)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -81,7 +88,7 @@ async function fetchUpcomingCounts() {
   return counts;
 }
 
-function evaluateHealth(latestRun, sourceCounts) {
+function evaluateHealth(latestRun, sourceCounts, quality) {
   const issues = [];
 
   if (!latestRun) {
@@ -91,35 +98,55 @@ function evaluateHealth(latestRun, sourceCounts) {
       message: "EDM ingest has never run",
       details: {}
     });
-    return issues;
+  }
+  if (latestRun) {
+    const ageHours = (Date.now() - new Date(latestRun.createdAt).getTime()) / (1000 * 60 * 60);
+    if (latestRun.status !== "success") {
+      issues.push({
+        category: "edm_scraper_job_health",
+        severity: "critical",
+        message: "EDM ingest latest run failed",
+        details: latestRun
+      });
+    }
+
+    if (ageHours > MAX_RUN_AGE_HOURS) {
+      issues.push({
+        category: "edm_scraper_job_health",
+        severity: "critical",
+        message: "EDM ingest is stale",
+        details: { maxRunAgeHours: MAX_RUN_AGE_HOURS, ageHours, latestRun }
+      });
+    }
+
+    const fetched = Number(latestRun.details?.fetched ?? 0);
+    if (fetched < MIN_FETCHED_EVENTS) {
+      issues.push({
+        category: "edm_scraper_volume",
+        severity: "warning",
+        message: "EDM ingest fetched count below threshold",
+        details: { fetched, minimumFetched: MIN_FETCHED_EVENTS, latestRun }
+      });
+    }
   }
 
-  const ageHours = (Date.now() - new Date(latestRun.createdAt).getTime()) / (1000 * 60 * 60);
-  if (latestRun.status !== "success") {
-    issues.push({
-      category: "edm_scraper_job_health",
-      severity: "critical",
-      message: "EDM ingest latest run failed",
-      details: latestRun
-    });
-  }
+  const bySource = latestRun?.details?.by_source ?? latestRun?.details?.bySource ?? {};
 
-  if (ageHours > MAX_RUN_AGE_HOURS) {
+  if (Number(bySource.posh ?? 0) < MIN_POSH_FETCHED_PER_RUN) {
     issues.push({
-      category: "edm_scraper_job_health",
-      severity: "critical",
-      message: "EDM ingest is stale",
-      details: { maxRunAgeHours: MAX_RUN_AGE_HOURS, ageHours, latestRun }
-    });
-  }
-
-  const fetched = Number(latestRun.details?.fetched ?? 0);
-  if (fetched < MIN_FETCHED_EVENTS) {
-    issues.push({
-      category: "edm_scraper_volume",
+      category: "edm_scraper_source_fetch",
       severity: "warning",
-      message: "EDM ingest fetched count below threshold",
-      details: { fetched, minimumFetched: MIN_FETCHED_EVENTS, latestRun }
+      message: "POSH fetched count below per-run threshold",
+      details: { fetchedPosh: Number(bySource.posh ?? 0), minimumFetchedPosh: MIN_POSH_FETCHED_PER_RUN }
+    });
+  }
+
+  if (Number(bySource.dice ?? 0) < MIN_DICE_FETCHED_PER_RUN) {
+    issues.push({
+      category: "edm_scraper_source_fetch",
+      severity: "warning",
+      message: "DICE fetched count below per-run threshold",
+      details: { fetchedDice: Number(bySource.dice ?? 0), minimumFetchedDice: MIN_DICE_FETCHED_PER_RUN }
     });
   }
 
@@ -141,7 +168,58 @@ function evaluateHealth(latestRun, sourceCounts) {
     });
   }
 
+  if ((quality.duplicateCount ?? 0) > MAX_DUPLICATE_EVENTS) {
+    issues.push({
+      category: "edm_scraper_quality",
+      severity: "warning",
+      message: "Duplicate EDM events detected",
+      details: {
+        duplicateCount: quality.duplicateCount,
+        maximumDuplicates: MAX_DUPLICATE_EVENTS,
+        sample: quality.duplicates.slice(0, 5)
+      }
+    });
+  }
+
+  if ((quality.badEventCount ?? 0) > MAX_BAD_EVENTS) {
+    issues.push({
+      category: "edm_scraper_quality",
+      severity: "warning",
+      message: "Bad EDM events detected",
+      details: {
+        badEventCount: quality.badEventCount,
+        maximumBadEvents: MAX_BAD_EVENTS,
+        sample: quality.badEvents.slice(0, 5)
+      }
+    });
+  }
+
   return issues;
+}
+
+async function fetchUpcomingImportedEvents() {
+  const nowIso = new Date().toISOString();
+  const ninetyDaysOut = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+  const { data, error } = await supabase
+    .from("events")
+    .select("id,title,venue_name,city,starts_at,source_primary")
+    .in("source_primary", ["posh", "dice"])
+    .gte("starts_at", nowIso)
+    .lte("starts_at", ninetyDaysOut)
+    .limit(5000);
+
+  if (error) {
+    throw new Error(`Failed to load imported EDM events for quality checks: ${error.message}`);
+  }
+
+  return (data ?? []).map((row) => ({
+    provider: row.source_primary,
+    providerEventId: row.id,
+    title: row.title,
+    venueName: row.venue_name,
+    city: row.city,
+    startsAt: row.starts_at
+  }));
 }
 
 async function createAlert(issue, payload) {
@@ -163,8 +241,12 @@ async function resolveRecoveredAlerts(activeIssueKeys) {
     { category: "edm_scraper_job_health", message: "EDM ingest latest run failed" },
     { category: "edm_scraper_job_health", message: "EDM ingest is stale" },
     { category: "edm_scraper_volume", message: "EDM ingest fetched count below threshold" },
+    { category: "edm_scraper_source_fetch", message: "POSH fetched count below per-run threshold" },
+    { category: "edm_scraper_source_fetch", message: "DICE fetched count below per-run threshold" },
     { category: "edm_scraper_inventory", message: "Upcoming Posh events below threshold" },
-    { category: "edm_scraper_inventory", message: "Upcoming DICE events below threshold" }
+    { category: "edm_scraper_inventory", message: "Upcoming DICE events below threshold" },
+    { category: "edm_scraper_quality", message: "Duplicate EDM events detected" },
+    { category: "edm_scraper_quality", message: "Bad EDM events detected" }
   ];
 
   await Promise.all(

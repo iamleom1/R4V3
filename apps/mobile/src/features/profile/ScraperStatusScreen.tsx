@@ -1,11 +1,26 @@
 import React, { useEffect, useState } from "react";
-import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { theme } from "../../theme";
-import { getScraperHealthSnapshot, listScraperJobRuns, type ScraperHealthSnapshot, type ScraperJobRun } from "./moderationRepository";
+import {
+  getScraperHealthSnapshot,
+  listScraperJobRuns,
+  listScraperSourceEvents,
+  type ScraperHealthSnapshot,
+  type ScraperJobRun,
+  type ScraperSourceEvent
+} from "./moderationRepository";
+import type { ProfileStackParamList } from "./ProfileNavigator";
 
-export function ScraperStatusScreen() {
+type Props = NativeStackScreenProps<ProfileStackParamList, "ScraperStatus">;
+const SCRAPER_SOURCES = ["posh", "dice"] as const;
+type ScraperSourceKey = (typeof SCRAPER_SOURCES)[number];
+const SOURCE_LABELS: Record<ScraperSourceKey, string> = { posh: "POSH", dice: "DICE" };
+
+export function ScraperStatusScreen({ navigation }: Props) {
   const [snapshot, setSnapshot] = useState<ScraperHealthSnapshot | null>(null);
   const [runs, setRuns] = useState<ScraperJobRun[]>([]);
+  const [sourceEvents, setSourceEvents] = useState<Record<ScraperSourceKey, ScraperSourceEvent[]>>({ posh: [], dice: [] });
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -13,9 +28,14 @@ export function ScraperStatusScreen() {
     if (refresh) setIsRefreshing(true);
     else setIsLoading(true);
 
-    const [nextSnapshot, nextRuns] = await Promise.all([getScraperHealthSnapshot(), listScraperJobRuns(10)]);
+    const [nextSnapshot, nextRuns, nextSourceEvents] = await Promise.all([
+      getScraperHealthSnapshot(),
+      listScraperJobRuns(10),
+      listScraperSourceEvents(12)
+    ]);
     setSnapshot(nextSnapshot);
     setRuns(nextRuns);
+    setSourceEvents(nextSourceEvents);
     setIsLoading(false);
     setIsRefreshing(false);
   }
@@ -32,7 +52,7 @@ export function ScraperStatusScreen() {
     >
       <View style={styles.hero}>
         <Text style={styles.heroTitle}>Scraper Status</Text>
-        <Text style={styles.heroMeta}>Health for the EDM ingest job, source coverage, and recent runs.</Text>
+        <Text style={styles.heroMeta}>Health for the EDM scraper jobs, source coverage, and recent runs.</Text>
       </View>
 
       {isLoading ? (
@@ -63,10 +83,18 @@ export function ScraperStatusScreen() {
       ) : null}
 
       <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Tracked Scraper Events</Text>
+        <Text style={styles.sectionMeta}>Use a source card to open the full upcoming event list when needed.</Text>
+        {SCRAPER_SOURCES.map((source) => (
+          <SourceSummaryCard key={source} source={source} events={sourceEvents[source]} onPress={() => navigation.navigate("ScraperSourceEvents", { source })} />
+        ))}
+      </View>
+
+      <View style={styles.section}>
         <Text style={styles.sectionTitle}>Recent Runs</Text>
         {runs.length === 0 ? (
           <View style={styles.emptyCard}>
-            <Text style={styles.emptyText}>No EDM ingest runs recorded yet.</Text>
+            <Text style={styles.emptyText}>No EDM scraper runs recorded yet.</Text>
           </View>
         ) : (
           runs.map((run) => (
@@ -84,6 +112,31 @@ export function ScraperStatusScreen() {
         )}
       </View>
     </ScrollView>
+  );
+}
+
+function SourceSummaryCard(props: { source: ScraperSourceKey; events: ScraperSourceEvent[]; onPress: () => void }) {
+  const sourceLabel = SOURCE_LABELS[props.source];
+  const nextEvent = props.events[0] ?? null;
+
+  return (
+    <Pressable style={styles.sourceCard} onPress={props.onPress}>
+      <View style={styles.sourceCardTop}>
+        <View style={styles.sourceChip}>
+          <Text style={styles.sourceChipText}>{sourceLabel}</Text>
+        </View>
+        <Text style={styles.sourceLinkText}>View events</Text>
+      </View>
+      <Text style={styles.sourceCardCount}>{props.events.length} upcoming</Text>
+      <Text style={styles.sourceCardMeta}>
+        {nextEvent ? `Next: ${formatTimestamp(nextEvent.startsAt)}` : "No upcoming events currently stored."}
+      </Text>
+      {nextEvent ? (
+        <Text style={styles.sourceCardPreview} numberOfLines={2}>
+          {nextEvent.title}
+        </Text>
+      ) : null}
+    </Pressable>
   );
 }
 
@@ -141,6 +194,29 @@ const styles = StyleSheet.create({
   metricHelper: { color: theme.colors.textSecondary, ...theme.type.caption },
   section: { gap: 8 },
   sectionTitle: { color: theme.colors.textPrimary, ...theme.type.titleSm },
+  sectionMeta: { color: theme.colors.textSecondary, ...theme.type.caption },
+  sourceCard: {
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    padding: 14,
+    gap: 6
+  },
+  sourceCardTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 },
+  sourceChip: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: theme.colors.accentSoft,
+    borderWidth: 1,
+    borderColor: theme.colors.accent
+  },
+  sourceChipText: { color: theme.colors.textPrimary, fontSize: 11, fontWeight: "800", letterSpacing: 0.6 },
+  sourceLinkText: { color: theme.colors.accent, fontWeight: "800" },
+  sourceCardCount: { color: theme.colors.textPrimary, ...theme.type.titleSm },
+  sourceCardMeta: { color: theme.colors.textSecondary, ...theme.type.caption },
+  sourceCardPreview: { color: theme.colors.textPrimary, fontWeight: "700" },
   rowCard: {
     borderRadius: 18,
     borderWidth: 1,

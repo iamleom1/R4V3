@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { toUserFacingError } from "../../lib/userFacingErrors";
 import type { RSVPStatus } from "../../types/domain";
 import { listMyEventRsvps, upsertEventRsvp } from "./eventRepository";
 
@@ -73,8 +74,14 @@ export function useEventRsvpState(profileId: string | null | undefined) {
   const refreshRsvps = useCallback(async () => {
     if (!profileId) return {} as RsvpMap;
     setError(null);
-    const next = await loadFromServer(profileId, true);
-    return next;
+    try {
+      const next = await loadFromServer(profileId, true);
+      return next;
+    } catch (error) {
+      const message = toUserFacingError(error, "Couldn’t refresh your events.");
+      setError(message);
+      return getRsvpSnapshot(profileId);
+    }
   }, [profileId]);
 
   const setRsvp = useCallback(
@@ -89,18 +96,25 @@ export function useEventRsvpState(profileId: string | null | undefined) {
       const optimistic = { ...previous, [eventId]: status };
       emit(profileId, optimistic);
 
-      const result = await upsertEventRsvp(profileId, eventId, status);
-      if (!result.ok) {
-        emit(profileId, previous);
-        setError(result.error);
-        setIsSyncing(false);
-        return result;
-      }
+      try {
+        const result = await upsertEventRsvp(profileId, eventId, status);
+        if (!result.ok) {
+          emit(profileId, previous);
+          setError(result.error);
+          return result;
+        }
 
-      // Invalidate/refresh global RSVP cache after write so all subscribers stay coherent.
-      await loadFromServer(profileId, true);
-      setIsSyncing(false);
-      return { ok: true as const };
+        // Invalidate/refresh global RSVP cache after write so all subscribers stay coherent.
+        await loadFromServer(profileId, true);
+        return { ok: true as const };
+      } catch (error) {
+        emit(profileId, previous);
+        const message = toUserFacingError(error, "Couldn’t update your RSVP.");
+        setError(message);
+        return { ok: false as const, error: message };
+      } finally {
+        setIsSyncing(false);
+      }
     },
     [profileId]
   );
@@ -110,4 +124,3 @@ export function useEventRsvpState(profileId: string | null | undefined) {
     [error, isSyncing, refreshRsvps, rsvps, setRsvp]
   );
 }
-

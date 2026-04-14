@@ -1,4 +1,7 @@
 import { getSupabaseClient } from "../../lib/supabase";
+import { trackEvent } from "../../lib/telemetry";
+import { toUserFacingError } from "../../lib/userFacingErrors";
+import { listPrimaryProfilePhotoUrls } from "../profile/photoRepository";
 
 export type ConversationListItem = {
   matchId: string;
@@ -14,11 +17,29 @@ export type ConversationListItem = {
   lastMessageSenderProfileId: string | null;
   lastReadAt: string | null;
   isUnread: boolean;
+  otherProfilePhotoUrl?: string | null;
 };
 
 export type MessageItem = {
   id: string;
   matchId: string;
+  senderProfileId: string;
+  body: string;
+  createdAt: string;
+};
+
+export type CrewGroupListItem = {
+  id: string;
+  title: string;
+  createdAt: string;
+  memberCount: number;
+  lastMessageBody: string | null;
+  lastMessageAt: string | null;
+};
+
+export type CrewGroupMessage = {
+  id: string;
+  groupId: string;
   senderProfileId: string;
   body: string;
   createdAt: string;
@@ -32,6 +53,11 @@ export type CreateReportInput = {
   eventId?: string | null;
 };
 
+type BlockRow = {
+  blocker_profile_id: string;
+  blocked_profile_id: string;
+};
+
 type MatchRow = {
   id: string;
   profile_low_id: string;
@@ -39,6 +65,11 @@ type MatchRow = {
   mode: "community" | "dating";
   event_id: string | null;
   created_at: string;
+};
+
+type HiddenConversationRow = {
+  match_id: string;
+  hidden_before_at: string;
 };
 
 type RpcConversationRow = {
@@ -60,38 +91,48 @@ type RpcConversationRow = {
 export async function listConversations(viewerProfileId: string): Promise<ConversationListItem[]> {
   const supabase = getSupabaseClient();
   if (!supabase) {
-    return [];
+    throw new Error("Supabase is not configured.");
   }
+
+  const blockedProfileIds = await listBlockedProfileIds(viewerProfileId);
 
   const { data: rpcRows, error: rpcError } = await (supabase.rpc as any)("list_conversations", {
     p_limit: 100
   });
 
   if (!rpcError && Array.isArray(rpcRows)) {
-    return (rpcRows as RpcConversationRow[]).map((row) => ({
-      matchId: row.match_id,
-      mode: row.mode,
-      eventName: row.event_name,
-      otherProfileId: row.other_profile_id,
-      otherDisplayName: row.other_display_name?.trim() || "R4V3 User",
-      otherCity: row.other_city,
-      otherVibeTags: Array.isArray(row.other_vibe_tags) ? row.other_vibe_tags : [],
-      matchedAt: row.matched_at,
-      lastMessageBody: row.last_message_body,
-      lastMessageAt: row.last_message_at,
-      lastMessageSenderProfileId: row.last_message_sender_profile_id,
-      lastReadAt: row.last_read_at,
-      isUnread: Boolean(row.is_unread)
+    const rows = (rpcRows as RpcConversationRow[])
+      .filter((row) => !blockedProfileIds.has(row.other_profile_id))
+      .map((row) => ({
+        matchId: row.match_id,
+        mode: row.mode,
+        eventName: row.event_name,
+        otherProfileId: row.other_profile_id,
+        otherDisplayName: row.other_display_name?.trim() || "R4V3 User",
+        otherCity: row.other_city,
+        otherVibeTags: Array.isArray(row.other_vibe_tags) ? row.other_vibe_tags : [],
+        matchedAt: row.matched_at,
+        lastMessageBody: row.last_message_body,
+        lastMessageAt: row.last_message_at,
+        lastMessageSenderProfileId: row.last_message_sender_profile_id,
+        lastReadAt: row.last_read_at,
+        isUnread: Boolean(row.is_unread),
+        otherProfilePhotoUrl: null
+      }));
+    const photoUrls = await listPrimaryProfilePhotoUrls(rows.map((row) => row.otherProfileId));
+    return rows.map((row) => ({
+      ...row,
+      otherProfilePhotoUrl: photoUrls[row.otherProfileId] ?? null
     }));
   }
 
-  return listConversationsLegacy(viewerProfileId);
+  return listConversationsLegacy(viewerProfileId, blockedProfileIds);
 }
 
-async function listConversationsLegacy(viewerProfileId: string): Promise<ConversationListItem[]> {
+async function listConversationsLegacy(viewerProfileId: string, blockedProfileIds: Set<string>): Promise<ConversationListItem[]> {
   const supabase = getSupabaseClient();
   if (!supabase) {
-    return [];
+    throw new Error("Supabase is not configured.");
   }
 
   const matchesTable = supabase.from("matches") as any;
@@ -102,7 +143,7 @@ async function listConversationsLegacy(viewerProfileId: string): Promise<Convers
     .limit(100);
 
   if (error || !Array.isArray(matchRows)) {
-    return [];
+    throw new Error(error?.message ?? "Failed to load conversations.");
   }
 
   const matches = matchRows as MatchRow[];
@@ -137,6 +178,11 @@ async function listConversationsLegacy(viewerProfileId: string): Promise<Convers
       .eq("profile_id", viewerProfileId)
       .in("match_id", matchIds) as Promise<{ data: any[] | null; error: any }>)
   ]);
+
+  const { data: hiddenRows } = await ((supabase.from("conversation_hidden_states") as any)
+    .select("match_id,hidden_before_at")
+    .eq("profile_id", viewerProfileId)
+    .in("match_id", matchIds) as Promise<{ data: HiddenConversationRow[] | null; error: any }>);
 
   const profileById = new Map<string, any>();
   if (Array.isArray(profilesRes.data)) {
@@ -176,44 +222,73 @@ async function listConversationsLegacy(viewerProfileId: string): Promise<Convers
     }
   }
 
-  return matches.map((match) => {
-    const otherProfileId = match.profile_low_id === viewerProfileId ? match.profile_high_id : match.profile_low_id;
-    const other = profileById.get(otherProfileId);
-    const event = match.event_id ? eventById.get(match.event_id) : null;
-    const latest = latestMessageByMatchId.get(match.id);
-    const lastReadAt = readStateByMatchId.get(match.id) ?? null;
-    const lastMessageAt = (latest?.created_at as string | null) ?? null;
-    const lastMessageSenderProfileId = (latest?.sender_profile_id as string | null) ?? null;
-    const lastMessageAtMs = lastMessageAt ? new Date(lastMessageAt).getTime() : null;
-    const lastReadAtMs = lastReadAt ? new Date(lastReadAt).getTime() : null;
-    const isUnread =
-      lastMessageAtMs !== null &&
-      lastMessageSenderProfileId !== null &&
-      lastMessageSenderProfileId !== viewerProfileId &&
-      (lastReadAtMs === null || lastMessageAtMs > lastReadAtMs);
+  const hiddenBeforeByMatchId = new Map<string, string>();
+  if (Array.isArray(hiddenRows)) {
+    for (const row of hiddenRows) {
+      if (row?.match_id && row.hidden_before_at) {
+        hiddenBeforeByMatchId.set(row.match_id, row.hidden_before_at);
+      }
+    }
+  }
 
-    return {
-      matchId: match.id,
-      mode: match.mode,
-      eventName: event?.title ?? null,
-      otherProfileId,
-      otherDisplayName: other?.display_name ?? "R4V3 User",
-      otherCity: other?.city ?? null,
-      otherVibeTags: Array.isArray(other?.vibe_tags) ? other.vibe_tags : [],
-      matchedAt: match.created_at,
-      lastMessageBody: latest?.body ?? null,
-      lastMessageAt,
-      lastMessageSenderProfileId,
-      lastReadAt,
-      isUnread
-    } satisfies ConversationListItem;
-  });
+  const rows = matches
+    .map((match) => {
+      const otherProfileId = match.profile_low_id === viewerProfileId ? match.profile_high_id : match.profile_low_id;
+      if (blockedProfileIds.has(otherProfileId)) {
+        return null;
+      }
+
+      const other = profileById.get(otherProfileId);
+      const event = match.event_id ? eventById.get(match.event_id) : null;
+      const latest = latestMessageByMatchId.get(match.id);
+      const lastReadAt = readStateByMatchId.get(match.id) ?? null;
+      const lastMessageAt = (latest?.created_at as string | null) ?? null;
+      const lastMessageSenderProfileId = (latest?.sender_profile_id as string | null) ?? null;
+      const latestActivityAt = lastMessageAt ?? match.created_at;
+      const lastMessageAtMs = lastMessageAt ? new Date(lastMessageAt).getTime() : null;
+      const lastReadAtMs = lastReadAt ? new Date(lastReadAt).getTime() : null;
+      const hiddenBeforeAt = hiddenBeforeByMatchId.get(match.id) ?? null;
+      const hiddenBeforeAtMs = hiddenBeforeAt ? new Date(hiddenBeforeAt).getTime() : null;
+      const isUnread =
+        lastMessageAtMs !== null &&
+        lastMessageSenderProfileId !== null &&
+        lastMessageSenderProfileId !== viewerProfileId &&
+        (lastReadAtMs === null || lastMessageAtMs > lastReadAtMs);
+
+      if (hiddenBeforeAtMs !== null && new Date(latestActivityAt).getTime() <= hiddenBeforeAtMs) {
+        return null;
+      }
+
+      return {
+        matchId: match.id,
+        mode: match.mode,
+        eventName: event?.title ?? null,
+        otherProfileId,
+        otherDisplayName: other?.display_name ?? "R4V3 User",
+        otherCity: other?.city ?? null,
+        otherVibeTags: Array.isArray(other?.vibe_tags) ? other.vibe_tags : [],
+        matchedAt: match.created_at,
+        lastMessageBody: latest?.body ?? null,
+        lastMessageAt,
+        lastMessageSenderProfileId,
+        lastReadAt,
+        isUnread,
+        otherProfilePhotoUrl: null
+      } satisfies ConversationListItem;
+    })
+    .filter(Boolean) as ConversationListItem[];
+
+  const photoUrls = await listPrimaryProfilePhotoUrls(rows.map((row) => row.otherProfileId));
+  return rows.map((row) => ({
+    ...row,
+    otherProfilePhotoUrl: photoUrls[row.otherProfileId] ?? null
+  }));
 }
 
 export async function listMessages(matchId: string, _viewerProfileId: string): Promise<MessageItem[]> {
   const supabase = getSupabaseClient();
   if (!supabase) {
-    return [];
+    throw new Error("Supabase is not configured.");
   }
 
   const messagesTable = supabase.from("messages") as any;
@@ -224,7 +299,7 @@ export async function listMessages(matchId: string, _viewerProfileId: string): P
     .order("created_at", { ascending: true });
 
   if (error || !Array.isArray(data)) {
-    return [];
+    throw new Error(error?.message ?? "Failed to load messages.");
   }
 
   return data.map((row: any) => ({
@@ -234,6 +309,126 @@ export async function listMessages(matchId: string, _viewerProfileId: string): P
     body: row.body,
     createdAt: row.created_at
   }));
+}
+
+export async function ensureDirectCrewGroup(otherProfileId: string) {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false as const, error: "Supabase is not configured." };
+  }
+
+  const { data, error } = await (supabase.rpc as any)("ensure_direct_crew_group", {
+    p_other_profile_id: otherProfileId
+  });
+
+  if (error) {
+    return { ok: false as const, error: toUserFacingError(error.message, "Failed to create crew group.") };
+  }
+
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row?.group_id) {
+    return { ok: false as const, error: "Failed to create crew group." };
+  }
+
+  return {
+    ok: true as const,
+    group: {
+      id: row.group_id as string,
+      createdAt: row.created_at as string
+    }
+  };
+}
+
+export async function listCrewGroups(viewerProfileId: string): Promise<CrewGroupListItem[]> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    throw new Error("Supabase is not configured.");
+  }
+
+  void viewerProfileId;
+
+  const { data, error } = await (supabase.rpc as any)("list_crew_groups");
+
+  if (error || !Array.isArray(data)) {
+    throw new Error(error?.message ?? "Failed to load crew groups.");
+  }
+
+  return data.map((row: any) => ({
+    id: row.group_id as string,
+    title:
+      (typeof row.title === "string" ? row.title.trim() : "") ||
+      (Array.isArray(row.other_member_names) ? row.other_member_names.filter(Boolean).join(", ") : "") ||
+      "Crew chat",
+    createdAt: row.created_at as string,
+    memberCount: typeof row.member_count === "number" ? row.member_count : Number(row.member_count ?? 0),
+    lastMessageBody: (row.last_message_body as string | null) ?? null,
+    lastMessageAt: (row.last_message_at as string | null) ?? null
+  }));
+}
+
+export async function listCrewGroupMessages(groupId: string): Promise<CrewGroupMessage[]> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    throw new Error("Supabase is not configured.");
+  }
+
+  const { data, error } = await ((supabase.from("crew_group_messages") as any)
+    .select("id,group_id,sender_profile_id,body,created_at")
+    .eq("group_id", groupId)
+    .is("deleted_at", null)
+    .order("created_at", { ascending: true }));
+
+  if (error || !Array.isArray(data)) {
+    throw new Error(error?.message ?? "Failed to load crew messages.");
+  }
+
+  return data.map((row: any) => ({
+    id: row.id,
+    groupId: row.group_id,
+    senderProfileId: row.sender_profile_id,
+    body: row.body,
+    createdAt: row.created_at
+  }));
+}
+
+export async function sendCrewGroupMessage(input: { groupId: string; senderProfileId: string; body: string }) {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false as const, error: "Supabase is not configured." };
+  }
+
+  const text = input.body.trim();
+  if (!text) {
+    return { ok: false as const, error: "Message cannot be empty." };
+  }
+
+  const { data, error } = await ((supabase.from("crew_group_messages") as any)
+    .insert({
+      group_id: input.groupId,
+      sender_profile_id: input.senderProfileId,
+      body: text
+    })
+    .select("id,group_id,sender_profile_id,body,created_at")
+    .single());
+
+  if (error || !data) {
+    return { ok: false as const, error: toUserFacingError(error?.message, "Failed to send crew message.") };
+  }
+
+  void trackEvent("crew_group_message_sent", {
+    group_id: input.groupId
+  });
+
+  return {
+    ok: true as const,
+    message: {
+      id: data.id,
+      groupId: data.group_id,
+      senderProfileId: data.sender_profile_id,
+      body: data.body,
+      createdAt: data.created_at
+    } satisfies CrewGroupMessage
+  };
 }
 
 export async function sendMessage(input: { matchId: string; senderProfileId: string; body: string }) {
@@ -254,8 +449,33 @@ export async function sendMessage(input: { matchId: string; senderProfileId: str
 
   const row = Array.isArray(data) ? data[0] : data;
   if (error || !row) {
-    return { ok: false as const, error: error?.message ?? "Failed to send message." };
+    return { ok: false as const, error: toUserFacingError(error?.message, "Failed to send message.") };
   }
+
+  void trackEvent("message_sent", {
+    match_id: input.matchId
+  });
+
+  void supabase.functions.invoke("send-message-push", {
+    body: {
+      matchId: input.matchId,
+      messageId: row.id as string
+    }
+  }).then(({ error: pushError }) => {
+    if (pushError) {
+      void trackEvent("push_send_invoke_failed", {
+        match_id: input.matchId,
+        message_id: row.id as string,
+        error: pushError.message
+      });
+    }
+  }).catch((pushError) => {
+    void trackEvent("push_send_invoke_failed", {
+      match_id: input.matchId,
+      message_id: row.id as string,
+      error: pushError instanceof Error ? pushError.message : String(pushError)
+    });
+  });
 
   return {
     ok: true as const,
@@ -277,8 +497,44 @@ export async function markConversationRead(matchId: string, _viewerProfileId: st
 
   const { error } = await (supabase.rpc as any)("mark_match_messages_read", { p_match_id: matchId });
   if (error) {
-    return { ok: false as const, error: error.message };
+    return { ok: false as const, error: toUserFacingError(error.message, "Failed to mark conversation as read.") };
   }
+
+  return { ok: true as const };
+}
+
+export async function hideConversation(matchId: string) {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false as const, error: "Supabase is not configured." };
+  }
+
+  const { error } = await (supabase.rpc as any)("hide_conversation", { p_match_id: matchId });
+  if (error) {
+    return { ok: false as const, error: toUserFacingError(error.message, "Failed to delete conversation.") };
+  }
+
+  void trackEvent("conversation_hidden", {
+    match_id: matchId
+  });
+
+  return { ok: true as const };
+}
+
+export async function unmatchConversation(matchId: string) {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false as const, error: "Supabase is not configured." };
+  }
+
+  const { error } = await (supabase.rpc as any)("unmatch_conversation", { p_match_id: matchId });
+  if (error) {
+    return { ok: false as const, error: toUserFacingError(error.message, "Failed to unmatch.") };
+  }
+
+  void trackEvent("conversation_unmatched", {
+    match_id: matchId
+  });
 
   return { ok: true as const };
 }
@@ -303,11 +559,87 @@ export async function createReport(input: CreateReportInput) {
   });
 
   if (error || !data) {
-    return { ok: false as const, error: error?.message ?? "Failed to submit report." };
+    return { ok: false as const, error: toUserFacingError(error?.message, "Failed to submit report.") };
   }
+
+  void trackEvent("report_submitted", {
+    category,
+    has_message_id: Boolean(input.messageId),
+    has_target_profile_id: Boolean(input.targetProfileId),
+    has_event_id: Boolean(input.eventId)
+  });
 
   return {
     ok: true as const,
     reportId: data as string
   };
+}
+
+export async function listBlockedProfileIds(viewerProfileId: string) {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return new Set<string>();
+  }
+
+  const { data, error } = await (supabase.from("blocks") as any)
+    .select("blocker_profile_id,blocked_profile_id")
+    .or(`blocker_profile_id.eq.${viewerProfileId},blocked_profile_id.eq.${viewerProfileId}`);
+
+  if (error || !Array.isArray(data)) {
+    return new Set<string>();
+  }
+
+  const blocked = new Set<string>();
+  for (const row of data as BlockRow[]) {
+    if (row.blocker_profile_id === viewerProfileId && row.blocked_profile_id) {
+      blocked.add(row.blocked_profile_id);
+    }
+    if (row.blocked_profile_id === viewerProfileId && row.blocker_profile_id) {
+      blocked.add(row.blocker_profile_id);
+    }
+  }
+  return blocked;
+}
+
+export async function isProfileBlocked(viewerProfileId: string, otherProfileId: string) {
+  const blockedIds = await listBlockedProfileIds(viewerProfileId);
+  return blockedIds.has(otherProfileId);
+}
+
+export async function blockProfile(viewerProfileId: string, otherProfileId: string) {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false as const, error: "Supabase is not configured." };
+  }
+
+  const { error } = await (supabase.from("blocks") as any).insert({
+    blocker_profile_id: viewerProfileId,
+    blocked_profile_id: otherProfileId
+  });
+
+  if (error) {
+    return { ok: false as const, error: toUserFacingError(error.message, "Failed to block this user.") };
+  }
+
+  void trackEvent("profile_blocked", { target_profile_id: otherProfileId });
+  return { ok: true as const };
+}
+
+export async function unblockProfile(viewerProfileId: string, otherProfileId: string) {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false as const, error: "Supabase is not configured." };
+  }
+
+  const { error } = await (supabase.from("blocks") as any)
+    .delete()
+    .eq("blocker_profile_id", viewerProfileId)
+    .eq("blocked_profile_id", otherProfileId);
+
+  if (error) {
+    return { ok: false as const, error: toUserFacingError(error.message, "Failed to unblock this user.") };
+  }
+
+  void trackEvent("profile_unblocked", { target_profile_id: otherProfileId });
+  return { ok: true as const };
 }

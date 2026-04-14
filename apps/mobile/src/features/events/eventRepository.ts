@@ -1,5 +1,8 @@
 import { getSupabaseClient } from "../../lib/supabase";
 import { env, hasTicketmasterEnv } from "../../lib/env";
+import { trackEvent } from "../../lib/telemetry";
+import { toUserFacingError } from "../../lib/userFacingErrors";
+import { listPrimaryProfilePhotoUrls } from "../profile/photoRepository";
 import type { EventRecord, RSVPStatus } from "../../types/domain";
 
 type EventRow = {
@@ -8,8 +11,15 @@ type EventRow = {
   venue_name: string | null;
   city: string | null;
   starts_at: string;
+  ends_at: string | null;
   genre_tags: string[] | null;
-  source_primary: "ticketmaster" | "seatgeek" | "manual";
+  source_primary: "ticketmaster" | "seatgeek" | "manual" | "posh" | "dice";
+  is_featured: boolean;
+  promotion_rank: number;
+  featured_until: string | null;
+  curation_note: string | null;
+  flyer_url: string | null;
+  music_preview_url: string | null;
 };
 
 type EventRsvpRow = {
@@ -18,93 +28,22 @@ type EventRsvpRow = {
   looking_for_crew?: boolean | null;
 };
 
-const demoEventsFallback: EventRecord[] = [
-  {
-    id: "sample-1",
-    title: "LicknDip",
-    city: "Los Angeles",
-    venueName: "The Circle",
-    startsAt: "2026-03-13T05:00:00.000Z",
-    genreTags: ["House", "Tech House"],
-    sourcePrimary: "manual"
-  },
-  {
-    id: "sample-2",
-    title: "Inland Groove",
-    city: "Riverside",
-    venueName: "Mezcal Ultra Lounge",
-    startsAt: "2026-03-20T05:00:00.000Z",
-    genreTags: ["House", "Latin House"],
-    sourcePrimary: "manual"
-  },
-  {
-    id: "sample-3",
-    title: "Blind Tiger",
-    city: "San Diego",
-    venueName: "Blind Tiger",
-    startsAt: "2026-03-21T04:00:00.000Z",
-    genreTags: ["Bass", "Dubstep"],
-    sourcePrimary: "manual"
-  },
-  {
-    id: "sample-4",
-    title: "Exchange LA",
-    city: "Los Angeles",
-    venueName: "Exchange LA",
-    startsAt: "2026-03-27T05:00:00.000Z",
-    genreTags: ["Progressive House", "Tech House"],
-    sourcePrimary: "manual"
-  },
-  {
-    id: "sample-5",
-    title: "Sound",
-    city: "Los Angeles",
-    venueName: "Sound Nightclub",
-    startsAt: "2026-03-28T05:00:00.000Z",
-    genreTags: ["House", "Melodic Techno"],
-    sourcePrimary: "manual"
-  },
-  {
-    id: "sample-6",
-    title: "Circoloco",
-    city: "Los Angeles",
-    venueName: "Grand Park",
-    startsAt: "2026-04-04T02:00:00.000Z",
-    genreTags: ["Techno", "House"],
-    sourcePrimary: "manual"
-  },
-  {
-    id: "sample-7",
-    title: "Nightshift",
-    city: "San Francisco",
-    venueName: "Public Works",
-    startsAt: "2026-04-10T06:00:00.000Z",
-    genreTags: ["Techno", "Industrial"],
-    sourcePrimary: "manual"
-  },
-  {
-    id: "sample-8",
-    title: "The Glass House",
-    city: "Pomona",
-    venueName: "The Glass House",
-    startsAt: "2026-04-18T04:00:00.000Z",
-    genreTags: ["Melodic Techno", "House"],
-    sourcePrimary: "manual"
-  }
-];
-
 export type EventAttendeePreview = {
   profileId: string;
   displayName: string;
   city: string | null;
   vibeTags: string[];
   rsvpStatus: RSVPStatus;
+  profilePhotoUrl?: string | null;
 };
 
 export type EventCandidatePreview = {
   profileId: string;
   displayName: string;
   city: string | null;
+  bio?: string | null;
+  gender?: string | null;
+  age?: number | null;
   vibeTags: string[];
   musicGenres: string[];
   overlapReason: string;
@@ -114,6 +53,7 @@ export type EventCandidatePreview = {
   education?: string | null;
   distanceKm?: number | null;
   connectionStatus?: "none" | "pending_outgoing" | "pending_incoming" | "matched";
+  profilePhotoUrl?: string | null;
 };
 
 export type EventAudienceMetrics = {
@@ -121,33 +61,108 @@ export type EventAudienceMetrics = {
   lookingForCrewCount: number;
 };
 
+export type EventCrewRoom = {
+  id: string;
+  eventId: string;
+  eventTitle?: string;
+  title: string;
+  meetupNote: string | null;
+  sizeCap: number;
+  isOpen: boolean;
+  createdBy: string;
+  createdAt: string;
+  memberCount: number;
+  isMember: boolean;
+};
+
+export type EventCrewMessage = {
+  id: string;
+  roomId: string;
+  senderProfileId: string;
+  body: string;
+  createdAt: string;
+};
+
 const localDemoRsvpsByProfile: Record<string, Record<string, RSVPStatus>> = {};
 const localDemoCrewVisibilityByProfile: Record<string, Record<string, boolean>> = {};
 
-export async function listUpcomingEvents(limit = 25): Promise<EventRecord[]> {
+const DEFAULT_DISCOVERY_EVENT_LIMIT = 60;
+const DISCOVERY_ALL_PAGE_SIZE = 200;
+const DISCOVERY_WINDOW_DAYS = 365;
+
+export async function listUpcomingEvents(limit: number | null = DEFAULT_DISCOVERY_EVENT_LIMIT, offset = 0): Promise<EventRecord[]> {
   const supabase = getSupabaseClient();
-  if (!supabase) {
-    const tmEvents = await listTicketmasterEvents(limit);
-    return tmEvents.length > 0 ? tmEvents : demoEventsFallback.slice(0, limit);
+  const requestLimit = typeof limit === "number" ? Math.max(1, limit) : null;
+  const requestOffset = Math.max(0, offset);
+  const mergedCandidates: EventRecord[] = [];
+  let loadedFromSupabase = false;
+
+  if (supabase) {
+    const eventsTable = supabase.from("events") as any;
+    const windowStart = new Date();
+
+    if (requestLimit === null) {
+      let from = 0;
+
+      while (true) {
+        const to = from + DISCOVERY_ALL_PAGE_SIZE - 1;
+        const { data, error } = await eventsTable
+          .select("id,title,venue_name,city,starts_at,ends_at,genre_tags,source_primary,is_featured,promotion_rank,featured_until,curation_note,flyer_url,music_preview_url")
+          .gte("starts_at", windowStart.toISOString())
+          .order("starts_at", { ascending: true })
+          .range(from, to);
+
+        if (error || !Array.isArray(data) || data.length === 0) {
+          break;
+        }
+
+        mergedCandidates.push(...data.map(mapEventRow));
+        loadedFromSupabase = true;
+
+        if (data.length < DISCOVERY_ALL_PAGE_SIZE) {
+          break;
+        }
+
+        from += data.length;
+      }
+    } else {
+      let from = 0;
+      const targetUniqueCount = requestOffset + requestLimit;
+
+      while (true) {
+        const to = from + DISCOVERY_ALL_PAGE_SIZE - 1;
+        const { data, error } = await eventsTable
+          .select("id,title,venue_name,city,starts_at,ends_at,genre_tags,source_primary,is_featured,promotion_rank,featured_until,curation_note,flyer_url,music_preview_url")
+          .gte("starts_at", windowStart.toISOString())
+          .order("starts_at", { ascending: true })
+          .range(from, to);
+
+        if (error || !Array.isArray(data) || data.length === 0) {
+          break;
+        }
+
+        mergedCandidates.push(...data.map(mapEventRow));
+        loadedFromSupabase = true;
+
+        const uniqueLoadedCount = dedupeAndRankEvents(mergedCandidates).filter(shouldShowDiscoveryEvent).length;
+        if (uniqueLoadedCount >= targetUniqueCount || data.length < DISCOVERY_ALL_PAGE_SIZE) {
+          break;
+        }
+
+        from += data.length;
+      }
+    }
   }
 
-  const eventsTable = supabase.from("events") as any;
-  const { data, error } = await eventsTable
-    .select("id,title,venue_name,city,starts_at,genre_tags,source_primary")
-    .gte("starts_at", new Date().toISOString())
-    .order("starts_at", { ascending: true })
-    .limit(limit);
-
-  if (error || !Array.isArray(data)) {
-    return demoEventsFallback.slice(0, limit);
+  if (!loadedFromSupabase) {
+    const tmEvents = await listTicketmasterEvents((requestLimit ?? DISCOVERY_ALL_PAGE_SIZE) + requestOffset, DISCOVERY_WINDOW_DAYS);
+    if (tmEvents.length > 0) {
+      mergedCandidates.push(...tmEvents);
+    }
   }
 
-  const rows = data.map(mapEventRow);
-  if (rows.length > 0) {
-    return rows;
-  }
-
-  return demoEventsFallback.slice(0, limit);
+  const rankedEvents = dedupeAndRankEvents(mergedCandidates).filter(shouldShowDiscoveryEvent);
+  return requestLimit === null ? rankedEvents : rankedEvents.slice(requestOffset, requestOffset + requestLimit);
 }
 
 export async function listMyEventRsvps(profileId: string): Promise<Record<string, RSVPStatus>> {
@@ -258,8 +273,13 @@ export async function upsertCrewVisibility(profileId: string, eventId: string, i
     .single();
 
   if (error) {
-    return { ok: false as const, error: error.message };
+    return { ok: false as const, error: toUserFacingError(error.message, "Couldn’t update crew visibility.") };
   }
+
+  void trackEvent("crew_visibility_updated", {
+    event_id: eventId,
+    looking_for_crew: isLooking
+  });
 
   return { ok: true as const };
 }
@@ -270,7 +290,7 @@ export async function upsertEventRsvp(profileId: string, eventId: string, status
     return { ok: false as const, error: "Supabase is not configured." };
   }
   if (!isUuidLike(eventId)) {
-    // Demo/local seeded events can use non-UUID IDs (e.g. "sample-1").
+    // External provider events can use non-UUID IDs (for example Ticketmaster IDs prefixed with `tm-`).
     // Persist locally so actions still drive cross-screen behavior (Events -> Crew).
     localDemoRsvpsByProfile[profileId] = {
       ...(localDemoRsvpsByProfile[profileId] ?? {}),
@@ -299,11 +319,16 @@ export async function upsertEventRsvp(profileId: string, eventId: string, status
     .single();
 
   if (error) {
-    return { ok: false as const, error: error.message };
+    return { ok: false as const, error: toUserFacingError(error.message, "Couldn’t update your RSVP.") };
   }
   if (status !== "going") {
     await rsvpTable.update({ looking_for_crew: false }).eq("profile_id", profileId).eq("event_id", eventId);
   }
+
+  void trackEvent("event_rsvp_updated", {
+    event_id: eventId,
+    status
+  });
 
   return { ok: true as const };
 }
@@ -330,7 +355,7 @@ export async function listEventAttendeePreview(eventId: string, limit = 8): Prom
     return [];
   }
 
-  return data
+  const rows = data
     .map((row: any) => {
       const profile = row.profiles;
       if (!profile?.id) {
@@ -346,6 +371,12 @@ export async function listEventAttendeePreview(eventId: string, limit = 8): Prom
       } satisfies EventAttendeePreview;
     })
     .filter(Boolean) as EventAttendeePreview[];
+
+  const photoUrls = await listPrimaryProfilePhotoUrls(rows.map((row) => row.profileId));
+  return rows.map((row) => ({
+    ...row,
+    profilePhotoUrl: photoUrls[row.profileId] ?? null
+  }));
 }
 
 export async function listEventCandidatePreview(
@@ -379,8 +410,8 @@ export async function listEventCandidatePreview(
     }
   }
 
-  const mapRows = (rows: any[]) =>
-    rows
+  const mapRows = async (rows: any[]) => {
+    const mapped = rows
       .map((row: any) => {
         if (!row?.profile_id || blockedIds.has(row.profile_id)) {
           return null;
@@ -392,28 +423,43 @@ export async function listEventCandidatePreview(
           profileId: row.profile_id as string,
           displayName: (row.display_name as string | null) ?? "R4V3 User",
           city: (row.city as string | null) ?? null,
+          bio: null,
+          gender: null,
+          age: null,
           vibeTags,
           musicGenres,
           overlapReason: buildOverlapReason(vibeTags, musicGenres),
           height: (row.height as string | null) ?? null,
           education: (row.education as string | null) ?? null,
           distanceKm: typeof row.distance_km === "number" ? row.distance_km : null,
-          connectionStatus: (row.connection_status as EventCandidatePreview["connectionStatus"]) ?? "none"
+          connectionStatus: (row.connection_status as EventCandidatePreview["connectionStatus"]) ?? "none",
+          profilePhotoUrl: null
         } satisfies EventCandidatePreview;
       })
       .filter(Boolean) as EventCandidatePreview[];
+
+    const details = await listProfileMatchDetails(mapped.map((row) => row.profileId));
+    const photoUrls = await listPrimaryProfilePhotoUrls(mapped.map((row) => row.profileId));
+    return mapped.map((row) => ({
+      ...row,
+      bio: details[row.profileId]?.bio ?? null,
+      gender: details[row.profileId]?.gender ?? null,
+      age: details[row.profileId]?.age ?? null,
+      profilePhotoUrl: photoUrls[row.profileId] ?? null
+    }));
+  };
 
   const { data: rpcData, error: rpcError } = await (supabase.rpc as any)("list_event_crew_candidates", {
     p_event_id: eventId,
     p_limit: limit * 2
   });
   if (Array.isArray(rpcData) && !rpcError) {
-    return mapRows(rpcData).slice(0, limit);
+    return (await mapRows(rpcData)).slice(0, limit);
   }
 
   const rsvpTable = supabase.from("event_rsvps") as any;
   const { data, error } = await rsvpTable
-    .select("profile_id, looking_for_crew, profiles:profile_id ( id, display_name, city, vibe_tags, music_genres, height, education )")
+    .select("profile_id, looking_for_crew, profiles:profile_id ( id, display_name, bio, birthdate, gender, city, vibe_tags, music_genres, height, education )")
     .eq("event_id", eventId)
     .eq("status", "going")
     .neq("profile_id", viewerProfileId)
@@ -423,7 +469,7 @@ export async function listEventCandidatePreview(
     return [];
   }
 
-  return data
+  const rows = data
     .map((row: any) => {
       const profile = row.profiles;
       if (!profile?.id || blockedIds.has(profile.id) || !row.looking_for_crew) {
@@ -437,17 +483,31 @@ export async function listEventCandidatePreview(
         profileId: profile.id as string,
         displayName: (profile.display_name as string | null) ?? "R4V3 User",
         city: (profile.city as string | null) ?? null,
+        bio: (profile.bio as string | null) ?? null,
+        gender: (profile.gender as string | null) ?? null,
+        age: computeAgeFromBirthdate(profile.birthdate as string | null),
         vibeTags,
         musicGenres,
         overlapReason: buildOverlapReason(vibeTags, musicGenres),
         height: (profile.height as string | null) ?? null,
         education: (profile.education as string | null) ?? null,
         distanceKm: null,
-        connectionStatus: "none"
+        connectionStatus: "none",
+        profilePhotoUrl: null
       } satisfies EventCandidatePreview;
     })
     .filter(Boolean)
     .slice(0, limit) as EventCandidatePreview[];
+
+  const details = await listProfileMatchDetails(rows.map((row) => row.profileId));
+  const photoUrls = await listPrimaryProfilePhotoUrls(rows.map((row) => row.profileId));
+  return rows.map((row) => ({
+    ...row,
+    bio: row.bio ?? details[row.profileId]?.bio ?? null,
+    gender: row.gender ?? details[row.profileId]?.gender ?? null,
+    age: row.age ?? details[row.profileId]?.age ?? null,
+    profilePhotoUrl: photoUrls[row.profileId] ?? null
+  }));
 }
 
 export async function listSeededEventCandidatePreview(
@@ -462,6 +522,9 @@ export async function listSeededEventCandidatePreview(
         profileId: "seeded-demo-1",
         displayName: "Also Going Crew",
         city: event.city ?? "Los Angeles",
+        bio: "Going to the same event and looking for crew.",
+        gender: null,
+        age: null,
         vibeTags: ["Community", "RSVP"],
         musicGenres: event.genreTags ?? ["EDM"],
         overlapReason: "Also going to this event",
@@ -472,6 +535,9 @@ export async function listSeededEventCandidatePreview(
         profileId: "seeded-demo-2",
         displayName: "Similar Shows Link",
         city: event.city ?? "Los Angeles",
+        bio: "Into similar shows and open to meeting up.",
+        gender: null,
+        age: null,
         vibeTags: ["House", "Afters"],
         musicGenres: event.genreTags ?? ["House"],
         overlapReason: "Into similar shows",
@@ -500,6 +566,9 @@ export async function listSeededEventCandidatePreview(
       profileId: profile.id as string,
       displayName: (profile.display_name as string | null) ?? "R4V3 User",
       city: (profile.city as string | null) ?? null,
+      bio: (profile.bio as string | null) ?? null,
+      gender: (profile.gender as string | null) ?? null,
+      age: computeAgeFromBirthdate(profile.birthdate as string | null),
       vibeTags,
       musicGenres,
       overlapReason: label,
@@ -507,7 +576,8 @@ export async function listSeededEventCandidatePreview(
       softCandidate: true,
       height: (profile.height as string | null) ?? null,
       education: (profile.education as string | null) ?? null,
-      distanceKm: null
+      distanceKm: null,
+      profilePhotoUrl: null
     });
   };
 
@@ -516,7 +586,7 @@ export async function listSeededEventCandidatePreview(
 
   if (isUuidLike(event.id)) {
     const { data: sameEventRows } = await rsvpTable
-      .select("profile_id,profiles:profile_id(id,display_name,city,vibe_tags,music_genres,height,education)")
+      .select("profile_id,profiles:profile_id(id,display_name,bio,birthdate,gender,city,vibe_tags,music_genres,height,education)")
       .eq("event_id", event.id).eq("status", "going")
       .neq("profile_id", viewerProfileId)
       .limit(limit * 2);
@@ -544,7 +614,7 @@ export async function listSeededEventCandidatePreview(
   }
   if (similarUpcomingIds.length > 0) {
     const { data: nearbyRows } = await rsvpTable
-      .select("profile_id,profiles:profile_id(id,display_name,city,vibe_tags,music_genres,height,education)")
+      .select("profile_id,profiles:profile_id(id,display_name,bio,birthdate,gender,city,vibe_tags,music_genres,height,education)")
       .in("event_id", similarUpcomingIds).eq("status", "going")
       .neq("profile_id", viewerProfileId)
       .limit(limit * 4);
@@ -573,7 +643,7 @@ export async function listSeededEventCandidatePreview(
   }
   if (recentSimilarIds.length > 0) {
     const { data: recentRows } = await rsvpTable
-      .select("profile_id,profiles:profile_id(id,display_name,city,vibe_tags,music_genres,height,education)")
+      .select("profile_id,profiles:profile_id(id,display_name,bio,birthdate,gender,city,vibe_tags,music_genres,height,education)")
       .in("event_id", recentSimilarIds).eq("status", "going")
       .neq("profile_id", viewerProfileId)
       .limit(limit * 4);
@@ -587,33 +657,80 @@ export async function listSeededEventCandidatePreview(
     }
   }
 
-  return results.slice(0, limit);
+  const sliced = results.slice(0, limit);
+  const photoUrls = await listPrimaryProfilePhotoUrls(sliced.map((row) => row.profileId));
+  return sliced.map((row) => ({
+    ...row,
+    profilePhotoUrl: photoUrls[row.profileId] ?? null
+  }));
+}
+
+async function listProfileMatchDetails(profileIds: string[]): Promise<Record<string, { bio: string | null; gender: string | null; age: number | null }>> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return {};
+  }
+
+  const uniqueProfileIds = Array.from(new Set(profileIds.filter(Boolean)));
+  if (uniqueProfileIds.length === 0) {
+    return {};
+  }
+
+  const { data, error } = await (supabase.from("profiles") as any)
+    .select("id,bio,gender,birthdate")
+    .in("id", uniqueProfileIds);
+
+  if (error || !Array.isArray(data)) {
+    return {};
+  }
+
+  return data.reduce<Record<string, { bio: string | null; gender: string | null; age: number | null }>>((acc, row: any) => {
+    if (row?.id) {
+      acc[row.id] = {
+        bio: typeof row.bio === "string" ? row.bio : null,
+        gender: typeof row.gender === "string" ? row.gender : null,
+        age: computeAgeFromBirthdate(typeof row.birthdate === "string" ? row.birthdate : null)
+      };
+    }
+    return acc;
+  }, {});
+}
+
+function computeAgeFromBirthdate(birthdate: string | null | undefined) {
+  if (!birthdate) return null;
+  const dob = new Date(birthdate);
+  if (Number.isNaN(dob.getTime())) return null;
+  const today = new Date();
+  let age = today.getFullYear() - dob.getFullYear();
+  const monthDiff = today.getMonth() - dob.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < dob.getDate())) age -= 1;
+  return age >= 18 && age < 120 ? age : null;
 }
 
 export async function startEventCrewThreadSeed(profileId: string, eventId: string) {
   const supabase = getSupabaseClient();
   if (!supabase) {
-    return { ok: true as const };
+    return { ok: true as const, roomId: null as string | null, title: "Open crew" };
   }
   if (!isUuidLike(eventId)) {
-    return { ok: true as const };
+    return { ok: true as const, roomId: null as string | null, title: "Open crew" };
   }
 
   const roomsTable = supabase.from("event_rooms") as any;
   const membersTable = supabase.from("event_room_members") as any;
   const { data: room, error: roomError } = await roomsTable
-    .upsert(
-      {
-        event_id: eventId,
-        created_by: profileId
-      },
-      { onConflict: "event_id" }
-    )
+    .insert({
+      event_id: eventId,
+      created_by: profileId,
+      title: "Open crew",
+      size_cap: 6,
+      is_open: true
+    })
     .select("id")
     .single();
 
   if (roomError || !room?.id) {
-    return { ok: false as const, error: roomError?.message ?? "Failed to create crew room." };
+    return { ok: false as const, error: toUserFacingError(roomError?.message, "Failed to create crew room.") };
   }
 
   const { error } = await membersTable
@@ -627,9 +744,158 @@ export async function startEventCrewThreadSeed(profileId: string, eventId: strin
     .select("room_id")
     .single();
   if (error) {
-    return { ok: false as const, error: error.message };
+    return { ok: false as const, error: toUserFacingError(error.message, "Failed to create crew room.") };
   }
+  return { ok: true as const, roomId: room.id as string, title: "Open crew" };
+}
+
+export async function listEventCrewRooms(eventId: string, viewerProfileId?: string | null): Promise<EventCrewRoom[]> {
+  const supabase = getSupabaseClient();
+  if (!supabase || !isUuidLike(eventId)) {
+    return [];
+  }
+
+  const { data, error } = await ((supabase.from("event_rooms") as any)
+    .select("id,event_id,title,meetup_note,size_cap,is_open,created_by,created_at,event_room_members(profile_id)")
+    .eq("event_id", eventId)
+    .order("created_at", { ascending: false }));
+
+  if (error || !Array.isArray(data)) {
+    return [];
+  }
+
+  return data.map((row: any) => {
+    const members = Array.isArray(row.event_room_members) ? row.event_room_members : [];
+    return {
+      id: row.id,
+      eventId: row.event_id,
+      eventTitle: undefined,
+      title: row.title ?? "Open crew",
+      meetupNote: row.meetup_note ?? null,
+      sizeCap: typeof row.size_cap === "number" ? row.size_cap : 6,
+      isOpen: row.is_open !== false,
+      createdBy: row.created_by,
+      createdAt: row.created_at,
+      memberCount: members.length,
+      isMember: Boolean(viewerProfileId && members.some((member: any) => member?.profile_id === viewerProfileId))
+    } satisfies EventCrewRoom;
+  });
+}
+
+export async function listMyEventCrewRooms(profileId: string): Promise<EventCrewRoom[]> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return [];
+  }
+
+  const { data, error } = await ((supabase.from("event_room_members") as any)
+    .select("room_id,event_rooms!inner(id,event_id,title,meetup_note,size_cap,is_open,created_by,created_at,events(title),event_room_members(profile_id))")
+    .eq("profile_id", profileId)
+    .order("created_at", { ascending: false, referencedTable: "event_rooms" }));
+
+  if (error || !Array.isArray(data)) {
+    return [];
+  }
+
+  return data
+    .map((row: any) => {
+      const room = row.event_rooms;
+      const members = Array.isArray(room?.event_room_members) ? room.event_room_members : [];
+      if (!room?.id || !room?.event_id) {
+        return null;
+      }
+      return {
+        id: room.id,
+        eventId: room.event_id,
+        eventTitle: room.events?.title ?? "Event",
+        title: room.title ?? "Open crew",
+        meetupNote: room.meetup_note ?? null,
+        sizeCap: typeof room.size_cap === "number" ? room.size_cap : 6,
+        isOpen: room.is_open !== false,
+        createdBy: room.created_by,
+        createdAt: room.created_at,
+        memberCount: members.length,
+        isMember: true
+      } satisfies EventCrewRoom;
+    })
+    .filter(Boolean) as EventCrewRoom[];
+}
+
+export async function joinEventCrewRoom(roomId: string, profileId: string) {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false as const, error: "Supabase is not configured." };
+  }
+
+  const { error } = await ((supabase.from("event_room_members") as any)
+    .upsert({ room_id: roomId, profile_id: profileId }, { onConflict: "room_id,profile_id" }));
+
+  if (error) {
+    return { ok: false as const, error: toUserFacingError(error.message, "Failed to join crew group.") };
+  }
+
   return { ok: true as const };
+}
+
+export async function listEventCrewMessages(roomId: string): Promise<EventCrewMessage[]> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    throw new Error("Supabase is not configured.");
+  }
+
+  const { data, error } = await ((supabase.from("event_room_messages") as any)
+    .select("id,room_id,sender_profile_id,body,created_at")
+    .eq("room_id", roomId)
+    .is("deleted_at", null)
+    .order("created_at", { ascending: true }));
+
+  if (error || !Array.isArray(data)) {
+    throw new Error(error?.message ?? "Failed to load crew messages.");
+  }
+
+  return data.map((row: any) => ({
+    id: row.id,
+    roomId: row.room_id,
+    senderProfileId: row.sender_profile_id,
+    body: row.body,
+    createdAt: row.created_at
+  }));
+}
+
+export async function sendEventCrewMessage(input: { roomId: string; senderProfileId: string; body: string }) {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false as const, error: "Supabase is not configured." };
+  }
+
+  const text = input.body.trim();
+  if (!text) {
+    return { ok: false as const, error: "Message cannot be empty." };
+  }
+
+  const { data, error } = await ((supabase.from("event_room_messages") as any)
+    .insert({
+      room_id: input.roomId,
+      sender_profile_id: input.senderProfileId,
+      body: text
+    })
+    .select("id,room_id,sender_profile_id,body,created_at")
+    .single());
+
+  if (error || !data) {
+    return { ok: false as const, error: toUserFacingError(error?.message, "Failed to send crew message.") };
+  }
+
+  return {
+    ok: true as const,
+    message: {
+      id: data.id,
+      roomId: data.room_id,
+      senderProfileId: data.sender_profile_id,
+      body: data.body,
+      createdAt: data.created_at
+    } satisfies EventCrewMessage
+  };
 }
 
 export async function createEventConnection(eventId: string, targetProfileId: string) {
@@ -646,7 +912,7 @@ export async function createEventConnection(eventId: string, targetProfileId: st
     p_target_id: targetProfileId
   });
   if (error) {
-    return { ok: false as const, error: error.message };
+    return { ok: false as const, error: toUserFacingError(error.message, "Couldn’t connect to this person right now.") };
   }
   const row = Array.isArray(data) ? data[0] : data;
   return {
@@ -689,8 +955,15 @@ function mapEventRow(row: EventRow): EventRecord {
     venueName: row.venue_name,
     city: row.city,
     startsAt: row.starts_at,
+    endsAt: row.ends_at,
     genreTags: row.genre_tags ?? [],
-    sourcePrimary: row.source_primary
+    sourcePrimary: row.source_primary,
+    isFeatured: row.is_featured,
+    promotionRank: row.promotion_rank ?? 0,
+    featuredUntil: row.featured_until,
+    curationNote: row.curation_note,
+    flyerUrl: row.flyer_url,
+    musicPreviewUrl: row.music_preview_url
   };
 }
 
@@ -712,6 +985,13 @@ function buildOverlapReason(vibeTags: string[], musicGenres: string[]) {
 type TicketmasterEvent = {
   id?: string;
   name?: string;
+  images?: Array<{
+    url?: string;
+    width?: number;
+    height?: number;
+    ratio?: string;
+    fallback?: boolean;
+  }>;
   dates?: {
     start?: {
       dateTime?: string;
@@ -733,55 +1013,48 @@ type TicketmasterEvent = {
   }>;
 };
 
-async function listTicketmasterEvents(limit: number): Promise<EventRecord[]> {
+async function listTicketmasterEvents(limit: number, daysAhead = 30): Promise<EventRecord[]> {
   if (!hasTicketmasterEnv()) {
     return [];
   }
 
   try {
-    const requestSize = Math.max(20, Math.min(limit * 4, 100));
+    const requestSize = Math.max(24, Math.min(Math.ceil(limit / 2), 60));
     const radius = Number.isFinite(env.ticketmasterRadiusMiles) ? Math.max(50, Math.min(80, Math.round(env.ticketmasterRadiusMiles))) : 80;
-    const baseParams = new URLSearchParams({
-      apikey: env.ticketmasterApiKey,
-      size: String(requestSize),
-      sort: "date,asc",
-      countryCode: env.ticketmasterCountryCode || "US",
-      classificationName: "music",
-      radius: String(radius),
-      unit: "miles"
-    });
-
-    if (env.ticketmasterCity?.trim()) {
-      baseParams.set("city", env.ticketmasterCity.trim());
-    }
     const now = new Date();
-    const thirtyDaysFromNow = new Date(now.getTime() + 1000 * 60 * 60 * 24 * 30);
-    baseParams.set("startDateTime", now.toISOString().replace(/\.\d{3}Z$/, "Z"));
-    baseParams.set("endDateTime", thirtyDaysFromNow.toISOString().replace(/\.\d{3}Z$/, "Z"));
+    const windowDays = Math.max(30, Math.min(120, Math.round(daysAhead)));
+    const horizonFromNow = new Date(now.getTime() + 1000 * 60 * 60 * 24 * windowDays);
+    const cities = resolveTicketmasterCities(env.ticketmasterCity);
+    const responses = await Promise.all(
+      cities.map((city) => {
+        const params = new URLSearchParams({
+          apikey: env.ticketmasterApiKey,
+          size: String(requestSize),
+          sort: "date,asc",
+          countryCode: env.ticketmasterCountryCode || "US",
+          classificationName: "music",
+          radius: String(radius),
+          unit: "miles",
+          city,
+          startDateTime: now.toISOString().replace(/\.\d{3}Z$/, "Z"),
+          endDateTime: horizonFromNow.toISOString().replace(/\.\d{3}Z$/, "Z")
+        });
 
-    const strictKeyword =
-      env.ticketmasterKeyword?.trim() ||
-      "rave OR edm OR electronic OR dance OR house OR techno OR dubstep OR trance OR hardstyle OR drum and bass OR dnb";
+        if (env.ticketmasterKeyword?.trim()) {
+          params.set("keyword", env.ticketmasterKeyword.trim());
+        }
 
-    const strictParams = new URLSearchParams(baseParams);
-    strictParams.set("keyword", strictKeyword);
-    const strictEvents = await fetchTicketmasterEvents(strictParams);
-    const strictMapped = strictEvents
+        return fetchTicketmasterEvents(params);
+      })
+    );
+
+    const broadMapped = dedupeTicketmasterEvents(responses.flat())
       .map(mapTicketmasterEvent)
       .filter((event): event is EventRecord => Boolean(event))
-      .filter((event) => isEdmOrRaveEvent(event))
+      .filter((event) => isSupportedDiscoveryCity(event.city))
+      .filter((event) => isEdmDiscoveryEvent(event))
       .sort((a, b) => scoreTicketmasterEvent(b) - scoreTicketmasterEvent(a));
-    if (strictMapped.length > 0) {
-      return strictMapped.slice(0, limit);
-    }
-
-    const broadEvents = await fetchTicketmasterEvents(baseParams);
-    const broadMapped = broadEvents
-      .map(mapTicketmasterEvent)
-      .filter((event): event is EventRecord => Boolean(event))
-      .filter((event) => isEdmOrRaveEvent(event))
-      .sort((a, b) => scoreTicketmasterEvent(b) - scoreTicketmasterEvent(a));
-    return broadMapped.slice(0, limit);
+    return broadMapped.slice(0, Math.max(limit, 1));
   } catch {
     return [];
   }
@@ -824,7 +1097,12 @@ function mapTicketmasterEvent(event: TicketmasterEvent): EventRecord | null {
     city,
     startsAt,
     genreTags: genres.length > 0 ? genres : ["EDM"],
-    sourcePrimary: "ticketmaster"
+    sourcePrimary: "ticketmaster",
+    isFeatured: false,
+    promotionRank: 0,
+    featuredUntil: null,
+    curationNote: null,
+    flyerUrl: extractTicketmasterFlyerUrl(event)
   };
 }
 
@@ -854,11 +1132,38 @@ function extractTicketmasterGenres(event: TicketmasterEvent) {
   return Array.from(tags).slice(0, 3);
 }
 
-const EDM_RAVE_KEYWORDS = [
+function extractTicketmasterFlyerUrl(event: TicketmasterEvent) {
+  const images = Array.isArray(event.images) ? event.images : [];
+  if (images.length === 0) {
+    return null;
+  }
+
+  const ranked = [...images]
+    .filter((image) => typeof image?.url === "string" && image.url.trim())
+    .sort((a, b) => scoreTicketmasterImage(b) - scoreTicketmasterImage(a));
+
+  return ranked[0]?.url?.trim() ?? null;
+}
+
+function scoreTicketmasterImage(image: NonNullable<TicketmasterEvent["images"]>[number]) {
+  const ratio = image.ratio?.trim().toLowerCase() ?? "";
+  const width = typeof image.width === "number" ? image.width : 0;
+  const height = typeof image.height === "number" ? image.height : 0;
+  const areaScore = width * height;
+
+  let score = areaScore;
+  if (ratio === "3_2") score += 5_000_000;
+  else if (ratio === "16_9") score += 4_000_000;
+  else if (ratio === "4_3") score += 3_000_000;
+  if (image.fallback) score -= 500_000;
+
+  return score;
+}
+
+const EDM_DISCOVERY_KEYWORDS = [
   "edm",
   "rave",
-  "electronic",
-  "dance",
+  "dance/electronic",
   "house",
   "tech house",
   "progressive house",
@@ -870,22 +1175,229 @@ const EDM_RAVE_KEYWORDS = [
   "dnb",
   "trance",
   "hardstyle",
-  "bass"
+  "bass",
+  "future bass",
+  "trap",
+  "uk garage",
+  "garage",
+  "breakbeat",
+  "afterhours",
+  "afters",
+  "all night long",
+  "open to close",
+  "b2b"
+];
+
+const TICKETMASTER_CROSSOVER_KEYWORDS = [
+  "reggaeton"
+];
+
+const TICKETMASTER_PARTY_CONTEXT_KEYWORDS = [
+  "rave",
+  "party",
+  "club",
+  "night",
+  "dj",
+  "festival",
+  "warehouse",
+  "afters",
+  "afterhours",
+  "all night long",
+  "open to close"
+];
+
+const NON_EDM_EXCLUSION_KEYWORDS = [
+  "comedy",
+  "podcast",
+  "worship",
+  "ballet",
+  "orchestra",
+  "symphony",
+  "musical",
+  "broadway",
+  "play",
+  "opera",
+  "latin",
+  "mariachi",
+  "country",
+  "folk",
+  "hip hop",
+  "hip-hop",
+  "rap",
+  "children",
+  "tribute",
+  "rock",
+  "punk",
+  "pop punk",
+  "hardcore",
+  "metal",
+  "alternative",
+  "indie",
+  "emo",
+  "grunge",
+  "ska",
+  "singer-songwriter",
+  "americana"
+];
+
+const DEFAULT_SOCAL_TICKETMASTER_CITIES = [
+  "Los Angeles",
+  "Hollywood",
+  "West Hollywood",
+  "Long Beach",
+  "Santa Ana",
+  "Anaheim",
+  "Costa Mesa",
+  "Pomona",
+  "Ontario",
+  "San Bernardino",
+  "Riverside",
+  "Temecula",
+  "San Diego",
+  "Ventura",
+  "Santa Barbara"
 ];
 
 function isEdmOrRaveEvent(event: EventRecord) {
-  const haystack = `${event.title} ${(event.genreTags ?? []).join(" ")}`.toLowerCase();
-  return EDM_RAVE_KEYWORDS.some((keyword) => haystack.includes(keyword));
+  const haystack = buildDiscoverySearchText(event);
+  if (EDM_DISCOVERY_KEYWORDS.some((keyword) => haystack.includes(keyword))) {
+    return true;
+  }
+
+  const hasCrossover = TICKETMASTER_CROSSOVER_KEYWORDS.some((keyword) => haystack.includes(keyword));
+  const hasPartyContext = TICKETMASTER_PARTY_CONTEXT_KEYWORDS.some((keyword) => haystack.includes(keyword));
+  return hasCrossover && hasPartyContext;
 }
 
 function scoreTicketmasterEvent(event: EventRecord) {
-  const haystack = `${event.title} ${(event.genreTags ?? []).join(" ")}`.toLowerCase();
+  const haystack = buildDiscoverySearchText(event);
   let score = 0;
-  for (const keyword of EDM_RAVE_KEYWORDS) {
+  for (const keyword of EDM_DISCOVERY_KEYWORDS) {
     if (haystack.includes(keyword)) score += 10;
   }
   if (haystack.includes("dance/electronic")) score += 12;
-  if (haystack.includes("electronic")) score += 8;
-  if (haystack.includes("dj")) score += 5;
+  if (TICKETMASTER_CROSSOVER_KEYWORDS.some((keyword) => haystack.includes(keyword))) score += 4;
+  if (TICKETMASTER_PARTY_CONTEXT_KEYWORDS.some((keyword) => haystack.includes(keyword))) score += 3;
   return score;
+}
+
+function shouldShowDiscoveryEvent(event: EventRecord) {
+  if (event.sourcePrimary !== "ticketmaster") {
+    return true;
+  }
+  return isSupportedDiscoveryCity(event.city) && isEdmDiscoveryEvent(event) && Boolean(event.flyerUrl?.trim());
+}
+
+function isEdmDiscoveryEvent(event: EventRecord) {
+  const haystack = buildDiscoverySearchText(event);
+  if (!isEdmOrRaveEvent(event)) {
+    return false;
+  }
+  return !NON_EDM_EXCLUSION_KEYWORDS.some((keyword) => haystack.includes(keyword));
+}
+
+function buildDiscoverySearchText(event: Pick<EventRecord, "title" | "venueName" | "genreTags">) {
+  return `${event.title} ${event.venueName ?? ""} ${(event.genreTags ?? []).join(" ")}`.toLowerCase();
+}
+
+function resolveTicketmasterCities(cityConfig: string) {
+  const configured = cityConfig
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const ordered = configured.length > 0 ? [...configured, ...DEFAULT_SOCAL_TICKETMASTER_CITIES] : DEFAULT_SOCAL_TICKETMASTER_CITIES;
+  return Array.from(new Set(ordered));
+}
+
+function isSupportedDiscoveryCity(city: string | null | undefined) {
+  if (!city) {
+    return false;
+  }
+  const normalized = normalizeDiscoveryCity(city);
+  return DEFAULT_SOCAL_TICKETMASTER_CITIES.some((candidate) => normalizeDiscoveryCity(candidate) === normalized);
+}
+
+function normalizeDiscoveryCity(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function dedupeTicketmasterEvents(events: TicketmasterEvent[]) {
+  const deduped = new Map<string, TicketmasterEvent>();
+  for (const event of events) {
+    const id = event.id?.trim();
+    if (!id || deduped.has(id)) continue;
+    deduped.set(id, event);
+  }
+  return Array.from(deduped.values());
+}
+
+function dedupeAndRankEvents(events: EventRecord[]) {
+  const deduped = new Map<string, EventRecord>();
+
+  for (const event of events) {
+    const key = getEventDedupKey(event);
+    const existing = deduped.get(key);
+    if (!existing || compareEventPriority(event, existing) < 0) {
+      deduped.set(key, event);
+    }
+  }
+
+  return Array.from(deduped.values()).sort((a, b) => compareEventPriority(a, b));
+}
+
+function getEventDedupKey(event: EventRecord) {
+  const startsAt = new Date(event.startsAt);
+  const dayKey = Number.isNaN(startsAt.getTime()) ? event.startsAt : startsAt.toISOString().slice(0, 10);
+  const normalizedTitle = event.title.trim().toLowerCase().replace(/\s+/g, " ");
+  const normalizedVenue = (event.venueName ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  const normalizedCity = (event.city ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  return `${normalizedTitle}|${normalizedVenue}|${normalizedCity}|${dayKey}`;
+}
+
+function compareEventPriority(a: EventRecord, b: EventRecord) {
+  const aFeatured = isEventFeaturedForSort(a) ? 1 : 0;
+  const bFeatured = isEventFeaturedForSort(b) ? 1 : 0;
+  if (bFeatured !== aFeatured) {
+    return bFeatured - aFeatured;
+  }
+
+  const rankDiff = (b.promotionRank ?? 0) - (a.promotionRank ?? 0);
+  if (rankDiff !== 0) {
+    return rankDiff;
+  }
+
+  const aHasFlyer = a.flyerUrl?.trim() ? 1 : 0;
+  const bHasFlyer = b.flyerUrl?.trim() ? 1 : 0;
+  if (bHasFlyer !== aHasFlyer) {
+    return bHasFlyer - aHasFlyer;
+  }
+
+  const aSourceRank = getEventSourceRank(a);
+  const bSourceRank = getEventSourceRank(b);
+  if (aSourceRank !== bSourceRank) {
+    return aSourceRank - bSourceRank;
+  }
+
+  const aTime = new Date(a.startsAt).getTime();
+  const bTime = new Date(b.startsAt).getTime();
+  if (aTime !== bTime) {
+    return aTime - bTime;
+  }
+
+  return a.title.localeCompare(b.title);
+}
+
+function isEventFeaturedForSort(event: EventRecord) {
+  if (!event.isFeatured) return false;
+  if (!event.featuredUntil) return true;
+  const featuredUntil = new Date(event.featuredUntil);
+  return Number.isNaN(featuredUntil.getTime()) || featuredUntil.getTime() > Date.now();
+}
+
+function getEventSourceRank(event: EventRecord) {
+  if (event.isFeatured) return 0;
+  if ((event.promotionRank ?? 0) > 0 || event.curationNote) return 1;
+  if (event.sourcePrimary === "manual") return 2;
+  if (event.sourcePrimary === "ticketmaster" || event.sourcePrimary === "posh" || event.sourcePrimary === "dice") return 3;
+  return 4;
 }

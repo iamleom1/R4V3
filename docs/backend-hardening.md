@@ -2,11 +2,12 @@
 
 ## What is live
 
-- Migrations through `0016_anon_telemetry.sql` are applied remotely.
+- Migrations through `0035_harden_crew_group_flows.sql` are applied remotely.
 - Edge Functions deployed:
 - `ingest-events`
 - `prune-events`
 - `ops-monitor`
+- `send-message-push`
 
 ## Messaging protections
 

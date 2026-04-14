@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -19,10 +19,12 @@ import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppState } from "../../app/AppProvider";
+import { RemoteImage } from "../../components/RemoteImage";
 import { getSupabaseClient } from "../../lib/supabase";
+import { toUserFacingError } from "../../lib/userFacingErrors";
 import { theme } from "../../theme";
 import type { EventRecord, RSVPStatus } from "../../types/domain";
-import { listEventAudienceMetrics, listUpcomingEvents, startEventCrewThreadSeed } from "../events/eventRepository";
+import { hasEventCrewChat, listEventAudienceMetrics, listUpcomingEvents, startEventCrewThreadSeed } from "../events/eventRepository";
 import { useCrewVisibilityState } from "../events/useCrewVisibilityState";
 import { useEventRsvpState } from "../events/useEventRsvpState";
 import type { MatchesStackParamList } from "./MatchesNavigator";
@@ -91,14 +93,14 @@ const demoCandidates: MatchCandidate[] = [
 export function MatchesScreen() {
   type TopTab = "for_you" | "matches_hub";
   type MatchInboxTab = "liked" | "likes_you" | "matches";
-  type CrewGatewayEvent = Pick<EventRecord, "id" | "title" | "city" | "startsAt" | "genreTags"> & { rsvpStatus: RSVPStatus };
+  type CrewGatewayEvent = Pick<EventRecord, "id" | "title" | "city" | "startsAt" | "genreTags" | "flyerUrl"> & { rsvpStatus: RSVPStatus };
   const SWIPE_THRESHOLD = 110;
   const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
   const stackHeight = Math.max(410, Math.min(570, SCREEN_HEIGHT - 320));
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<NativeStackNavigationProp<MatchesStackParamList>>();
   const { session, matchFilters, profileDraft } = useAppState();
-  const { refreshRsvps } = useEventRsvpState(session?.user?.id ?? null);
+  const { rsvps, refreshRsvps, setRsvp } = useEventRsvpState(session?.user?.id ?? null);
   const { visibility, setLooking, refreshVisibility } = useCrewVisibilityState(session?.user?.id ?? null);
   const [candidates, setCandidates] = useState<MatchCandidate[]>([]);
   const [index, setIndex] = useState(0);
@@ -117,6 +119,7 @@ export function MatchesScreen() {
   const [likedProfiles, setLikedProfiles] = useState<MatchCandidate[]>([]);
   const [matchedProfiles, setMatchedProfiles] = useState<MatchCandidate[]>([]);
   const [incomingLikesProfiles, setIncomingLikesProfiles] = useState<MatchCandidate[]>([]);
+  const [crewGatewaySourceEvents, setCrewGatewaySourceEvents] = useState<EventRecord[]>([]);
   const [crewGatewayEvents, setCrewGatewayEvents] = useState<CrewGatewayEvent[]>([]);
   const [isLoadingCrewGateway, setIsLoadingCrewGateway] = useState(true);
   const [crewGatewayMetrics, setCrewGatewayMetrics] = useState<Record<string, { goingCount: number; lookingForCrewCount: number }>>({});
@@ -127,6 +130,8 @@ export function MatchesScreen() {
   const [showCrewVisibilityHint, setShowCrewVisibilityHint] = useState(false);
   const [notifyCrewActivity, setNotifyCrewActivity] = useState(false);
   const photoStageHeight = Math.max(300, Math.min(520, stackHeight - 12));
+  const lastCrewGatewayFetchAtRef = useRef(0);
+  const hasLoadedCrewGatewayRef = useRef(false);
 
   if (Platform.OS === "android" && (UIManager as any).setLayoutAnimationEnabledExperimental) {
     (UIManager as any).setLayoutAnimationEnabledExperimental(true);
@@ -149,17 +154,24 @@ export function MatchesScreen() {
     return [liveFirst, ...demoCandidates.slice(1)];
   }, [profileDraft.bio, profileDraft.birthdate, profileDraft.city, profileDraft.displayName, profileDraft.education, profileDraft.height, profileDraft.vibeTags]);
 
-  const sourceCandidates = candidates.length > 0 ? candidates : liveDemoCandidates;
-  const usingDemoFallback = !hasRealSession || candidates.length === 0;
+  const sourceCandidates = hasRealSession ? candidates : liveDemoCandidates;
+  const usingDemoFallback = !hasRealSession;
   const plannedEventsForGateway = useMemo(() => crewGatewayEvents, [crewGatewayEvents]);
   const selectedCrewEvent = useMemo(
     () => (selectedCrewEventId ? plannedEventsForGateway.find((event) => event.id === selectedCrewEventId) ?? null : null),
     [plannedEventsForGateway, selectedCrewEventId]
   );
+  const selectedCrewEventGenreLabel = useMemo(
+    () => compactGenreLabel(selectedCrewEvent?.genreTags?.[0] ?? null),
+    [selectedCrewEvent?.genreTags]
+  );
   const crewCandidates = useMemo(() => {
     if (!selectedCrewEvent) return [];
-    return sourceCandidates.filter((candidate) => candidateMatchesCrewEvent(candidate, selectedCrewEvent));
-  }, [selectedCrewEvent, sourceCandidates]);
+    return sourceCandidates
+      .filter((candidate) => candidateMatchesCrewEvent(candidate, selectedCrewEvent))
+      .filter((candidate) => candidate.connectionStatus !== "pending_outgoing" && candidate.connectionStatus !== "matched")
+      .filter((candidate) => candidateMatchesProfilePreferences(candidate, profileDraft));
+  }, [profileDraft, selectedCrewEvent, sourceCandidates]);
   const swipe = React.useRef(new Animated.ValueXY()).current;
   const swipeActionLockedRef = React.useRef(false);
   const current = crewCandidates[index] ?? null;
@@ -209,7 +221,7 @@ export function MatchesScreen() {
       setCandidates(rows);
       setIndex(0);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to refresh match stack.");
+      setError(toUserFacingError(e, "Failed to refresh match stack."));
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -227,40 +239,80 @@ export function MatchesScreen() {
     session?.user?.id
   ]);
 
-  const loadCrewGatewayEvents = React.useCallback(async () => {
+  const loadCrewGatewayEvents = React.useCallback(async (options?: { showSpinner?: boolean }) => {
     if (!session?.user?.id) {
+      setCrewGatewaySourceEvents([]);
       setCrewGatewayEvents([]);
       setIsLoadingCrewGateway(false);
+      hasLoadedCrewGatewayRef.current = false;
       return;
     }
 
-    setIsLoadingCrewGateway(true);
+    const showSpinner = options?.showSpinner ?? !hasLoadedCrewGatewayRef.current;
+    if (showSpinner) {
+      setIsLoadingCrewGateway(true);
+    }
     try {
-      const [events, rsvps] = await Promise.all([listUpcomingEvents(50), refreshRsvps(), refreshVisibility()]);
-      const going = events
-        .filter((event) => rsvps[event.id] === "going")
-        .map((event) => ({ ...event, rsvpStatus: "going" as const }));
-      setCrewGatewayEvents(going);
+      const [events, rsvps] = await Promise.all([listUpcomingEvents(null), refreshRsvps(), refreshVisibility()]);
+      setCrewGatewaySourceEvents(events);
+      const going = events.filter((event) => rsvps[event.id] === "going");
+      setCrewGatewayEvents(going.map((event) => ({ ...event, rsvpStatus: "going" as const })));
       const metrics = await listEventAudienceMetrics(going.map((event) => event.id));
       setCrewGatewayMetrics(metrics);
+      lastCrewGatewayFetchAtRef.current = Date.now();
+      hasLoadedCrewGatewayRef.current = true;
     } finally {
-      setIsLoadingCrewGateway(false);
+      if (showSpinner) {
+        setIsLoadingCrewGateway(false);
+      }
     }
   }, [refreshRsvps, refreshVisibility, session?.user?.id]);
 
   useEffect(() => {
-    void loadCrewGatewayEvents();
-  }, [loadCrewGatewayEvents]);
+    hasLoadedCrewGatewayRef.current = false;
+    setCrewGatewaySourceEvents([]);
+    setCrewGatewayEvents([]);
+    setCrewGatewayMetrics({});
+    setSelectedCrewEventId(null);
+    if (session?.user?.id) {
+      void loadCrewGatewayEvents({ showSpinner: true });
+    }
+  }, [loadCrewGatewayEvents, session?.user?.id]);
 
   useFocusEffect(
     React.useCallback(() => {
-      // Always land on event gateway first; stack opens only after explicit event selection.
-      setSelectedCrewEventId(null);
-      setIndex(0);
-      void loadCrewGatewayEvents();
+      if (!hasLoadedCrewGatewayRef.current) {
+        void loadCrewGatewayEvents({ showSpinner: true });
+      }
       return undefined;
     }, [loadCrewGatewayEvents])
   );
+
+  useEffect(() => {
+    if (!session?.user?.id || crewGatewaySourceEvents.length === 0) {
+      return;
+    }
+
+    const going = crewGatewaySourceEvents
+      .filter((event) => rsvps[event.id] === "going")
+      .map((event) => ({ ...event, rsvpStatus: "going" as const }));
+    setCrewGatewayEvents(going);
+  }, [crewGatewaySourceEvents, rsvps, session?.user?.id]);
+
+  useEffect(() => {
+    let active = true;
+
+    async function refreshCrewGatewayMetrics() {
+      const metrics = await listEventAudienceMetrics(crewGatewayEvents.map((event) => event.id));
+      if (!active) return;
+      setCrewGatewayMetrics(metrics);
+    }
+
+    void refreshCrewGatewayMetrics();
+    return () => {
+      active = false;
+    };
+  }, [crewGatewayEvents]);
 
   useEffect(() => {
     if (!selectedCrewEventId) return;
@@ -327,6 +379,47 @@ export function MatchesScreen() {
     });
   }
 
+  async function confirmLeaveCrewGatewayEvent(eventId: string) {
+    if (!session?.user?.id) {
+      return;
+    }
+
+    const inCrewChat = await hasEventCrewChat(session.user.id, eventId);
+    const message = inCrewChat
+      ? "You’ll exit this event and be removed from your crew chat."
+      : "You’ll be removed from crew matching for this event.";
+
+    Alert.alert("Leave Event?", message, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Leave Event",
+        style: "destructive",
+        onPress: () => {
+          void leaveCrewGatewayEvent(eventId);
+        }
+      }
+    ]);
+  }
+
+  async function leaveCrewGatewayEvent(eventId: string) {
+    if (!session?.user?.id) {
+      return;
+    }
+
+    const result = await setRsvp(eventId, "none");
+    if (!result.ok) {
+      Alert.alert("Couldn’t leave event", result.error);
+      return;
+    }
+
+    const [rsvps, visibilityMap] = await Promise.all([refreshRsvps(), refreshVisibility()]);
+    setCrewGatewayEvents((prev) => prev.filter((event) => rsvps[event.id] === "going"));
+    if (selectedCrewEventId === eventId || !visibilityMap[eventId]) {
+      setSelectedCrewEventId(null);
+      setIndex(0);
+    }
+  }
+
   useEffect(() => {
     if (usingDemoFallback) {
       setIncomingLikesProfiles((prev) => (prev.length > 0 ? prev : demoCandidates.slice(1, 3)));
@@ -343,20 +436,22 @@ export function MatchesScreen() {
       return;
     }
 
+    const currentCandidate = current;
+
     const canPersistSwipe =
       hasRealSession &&
       session?.user?.id &&
       !usingDemoFallback &&
-      isUuidLike(current.id);
+      isUuidLike(currentCandidate.id);
 
     if (canPersistSwipe) {
       setIsSubmitting(true);
       setError(null);
       const result = await createSwipeDecision({
         actorProfileId: session.user.id,
-        targetProfileId: current.id,
-        eventId: current.eventId,
-        mode: current.mode,
+        targetProfileId: currentCandidate.id,
+        eventId: currentCandidate.eventId,
+        mode: currentCandidate.mode,
         decision
       });
       setIsSubmitting(false);
@@ -366,22 +461,28 @@ export function MatchesScreen() {
         return;
       }
       if (result.matchCreated) {
-        setMatchedProfiles((prev) => [current, ...prev.filter((item) => item.id !== current.id)]);
-        setMatchSuccessMessage(`Mutual match with ${current.name}. Chat unlock is next.`);
+        setMatchedProfiles((prev) => [currentCandidate, ...prev.filter((item) => item.id !== currentCandidate.id)]);
+        setMatchSuccessMessage(`Mutual match with ${currentCandidate.name}. Chat unlock is next.`);
         navigation.getParent()?.navigate("Messages" as never);
       } else {
         setMatchSuccessMessage(null);
       }
+
     }
 
+    setCandidates((prev) => prev.filter((candidate) => candidate.id !== currentCandidate.id));
+
     if (decision === "like") {
-      setLikedProfiles((prev) => [current, ...prev.filter((item) => item.id !== current.id)]);
+      setLikedProfiles((prev) => [currentCandidate, ...prev.filter((item) => item.id !== currentCandidate.id)]);
       setLikedCount((n) => n + 1);
     } else {
       setPassedCount((n) => n + 1);
+      setLikedProfiles((prev) => prev.filter((item) => item.id !== currentCandidate.id));
+      setMatchedProfiles((prev) => prev.filter((item) => item.id !== currentCandidate.id));
+      setIncomingLikesProfiles((prev) => prev.filter((item) => item.id !== currentCandidate.id));
     }
 
-    setIndex((n) => n + 1);
+    setIndex(0);
   }
 
   function resetCardPosition() {
@@ -668,15 +769,17 @@ export function MatchesScreen() {
                     }
                     setSelectedCrewEventId(event.id);
                   }}
-                >
+              >
                   <View style={[styles.crewGatewayCardShellArt, crewGatewayPalette(idx)]}>
-                    <View style={styles.crewGatewayGlowA} />
-                    <View style={styles.crewGatewayGlowB} />
-                    <View style={styles.crewGatewayBeamA} />
-                    <View style={styles.crewGatewayBeamB} />
-                    <View style={styles.crewGatewayGridScan} />
-                    <View style={styles.crewGatewayWaveLine} />
-                    <View style={styles.crewGatewayWaveLineAlt} />
+                    {event.flyerUrl ? <RemoteImage uri={event.flyerUrl} style={styles.crewGatewayFlyerImage} /> : null}
+                    {event.flyerUrl ? <View style={styles.crewGatewayFlyerOverlay} /> : null}
+                    {!event.flyerUrl ? <View style={styles.crewGatewayGlowA} /> : null}
+                    {!event.flyerUrl ? <View style={styles.crewGatewayGlowB} /> : null}
+                    {!event.flyerUrl ? <View style={styles.crewGatewayBeamA} /> : null}
+                    {!event.flyerUrl ? <View style={styles.crewGatewayBeamB} /> : null}
+                    {!event.flyerUrl ? <View style={styles.crewGatewayGridScan} /> : null}
+                    {!event.flyerUrl ? <View style={styles.crewGatewayWaveLine} /> : null}
+                    {!event.flyerUrl ? <View style={styles.crewGatewayWaveLineAlt} /> : null}
                     <View style={styles.crewGatewayHeroRow}>
                       <View style={styles.crewGatewayHeroGenreChip}>
                         <Text style={styles.crewGatewayHeroGenreChipText}>
@@ -725,7 +828,17 @@ export function MatchesScreen() {
                           return;
                         }
                         const nextEnabled = !lookingForCrewEnabled;
-                        void setLooking(event.id, nextEnabled);
+                        void (async () => {
+                          const result = await setLooking(event.id, nextEnabled);
+                          if (!result.ok) {
+                            Alert.alert("Couldn’t update crew visibility", result.error);
+                            return;
+                          }
+                          await Promise.all([
+                            loadCandidates({ refresh: true }),
+                            loadCrewGatewayEvents({ showSpinner: false })
+                          ]);
+                        })();
                         if (nextEnabled && !hasSeenCrewVisibilityHint) {
                           setShowCrewVisibilityHint(true);
                           void markCrewVisibilityHintSeen();
@@ -778,6 +891,17 @@ export function MatchesScreen() {
                         ›
                       </Text>
                     </View>
+
+                    <Pressable
+                      hitSlop={8}
+                      onPress={(pressEvent) => {
+                        pressEvent.stopPropagation?.();
+                        void confirmLeaveCrewGatewayEvent(event.id);
+                      }}
+                      style={styles.crewGatewayLeaveAction}
+                    >
+                      <Text style={styles.crewGatewayLeaveActionText}>Leave event</Text>
+                    </Pressable>
                   </View>
                 </Pressable>
               );
@@ -840,17 +964,18 @@ export function MatchesScreen() {
               </Animated.View>
 
               <View style={[styles.photoStage, { flex: 1, minHeight: photoStageHeight }]}>
-                <View style={styles.photoGlow} />
-                <View style={styles.photoOrb} />
-                <View style={styles.photoNoiseStripe} />
-                <View style={styles.stageBeamLeft} />
-                <View style={styles.stageBeamRight} />
+                {current.profilePhotoUrl ? <RemoteImage uri={current.profilePhotoUrl} style={styles.profilePhotoImage} /> : null}
+                {!current.profilePhotoUrl ? <View style={styles.photoGlow} /> : null}
+                {!current.profilePhotoUrl ? <View style={styles.photoOrb} /> : null}
+                {!current.profilePhotoUrl ? <View style={styles.photoNoiseStripe} /> : null}
+                {!current.profilePhotoUrl ? <View style={styles.stageBeamLeft} /> : null}
+                {!current.profilePhotoUrl ? <View style={styles.stageBeamRight} /> : null}
                 <View style={styles.photoOverlay}>
                   <View pointerEvents="none" style={styles.photoBottomFadeSoft} />
                   <View pointerEvents="none" style={styles.photoBottomFadeStrong} />
                   <View style={styles.photoTopMeta}>
                     <View style={styles.eventPill}>
-                      <Text style={styles.eventPillText}>{current.eventName}</Text>
+                      <Text style={styles.eventPillText}>{selectedCrewEventGenreLabel}</Text>
                     </View>
                     <View style={styles.photoModePill}>
                       <Text style={styles.photoModePillText}>{current.mode}</Text>
@@ -863,6 +988,7 @@ export function MatchesScreen() {
                         <Text style={styles.photoTitle}>
                           {current.name}{current.age ? `, ${current.age}` : ""}
                         </Text>
+                        <Text style={styles.photoIntentLine}>{matchIntentLine(current)}</Text>
                         <Text style={styles.photoSubtitle}>{current.city}</Text>
                         <Text style={styles.photoDistance}>{formatDistanceAway(current)}</Text>
                       </View>
@@ -877,16 +1003,15 @@ export function MatchesScreen() {
                 <View style={styles.expandedInCardBody}>
                   <View style={styles.modalSection}>
                     <Text style={styles.modalSectionLabel}>About me</Text>
-                    <Text style={styles.modalBodyText}>{current.bio}</Text>
+                    <Text style={styles.modalBodyText}>{current.bio?.trim() || "Add a bio to get more matches"}</Text>
                   </View>
 
                   <View style={styles.modalSection}>
-                    <Text style={styles.modalSectionLabel}>Basic info</Text>
+                    <Text style={styles.modalSectionLabel}>Meetup info</Text>
                     <View style={styles.cleanFactsList}>
                       <FactLine label="Location" value={current.city ?? "Not shared"} />
                       <FactLine label="Distance" value={formatDistanceAway(current)} />
-                      <FactLine label="Height" value={profileFact(current, "height")} />
-                      <FactLine label="Education" value={profileFact(current, "education")} />
+                      <FactLine label="Crew size preference" value={crewSizePreference(current)} />
                     </View>
                   </View>
 
@@ -894,19 +1019,19 @@ export function MatchesScreen() {
                     <Text style={styles.modalSectionLabel}>Showcase</Text>
                     <View style={styles.showcasePill}>
                       <View style={styles.showcaseGroup}>
-                        <Text style={styles.showcaseGroupLabel}>Previously attended</Text>
+                        <Text style={styles.showcaseGroupLabel}>Been to 5+ events</Text>
                         <View style={styles.showcaseGrid}>
                           {(current.previousEvents && current.previousEvents.length > 0
                             ? current.previousEvents
                             : [current.eventName ?? "Shared event"]
                           ).slice(0, 4).map((eventName, idx) => (
-                            <EventArtTile key={`${eventName}-${idx}`} title={eventName} index={idx} />
+                            <EventArtTile key={`${eventName}-${idx}`} title={`Went to: ${eventName}`} index={idx} />
                           ))}
                         </View>
                       </View>
 
                       <View style={styles.showcaseGroup}>
-                        <Text style={styles.showcaseGroupLabel}>Favorite music</Text>
+                        <Text style={styles.showcaseGroupLabel}>Vibe</Text>
                         <View style={styles.showcaseGrid}>
                           {(current.vibeTags && current.vibeTags.length > 0
                             ? current.vibeTags
@@ -1014,9 +1139,15 @@ export function MatchesScreen() {
   );
 }
 
-function profileFact(candidate: MatchCandidate | null, key: "height" | "education" | "jobTitle") {
-  const value = candidate?.[key];
-  return value && String(value).trim() ? String(value) : "Not shared";
+function crewSizePreference(candidate: MatchCandidate | null) {
+  if (candidate?.connectionType === "group") {
+    return "Group";
+  }
+  return "Solo";
+}
+
+function matchIntentLine(candidate: MatchCandidate | null) {
+  return `Interested • ${crewSizePreference(candidate)}`;
 }
 
 function formatSober(value: MatchCandidate["soberPreference"] | undefined) {
@@ -1066,10 +1197,45 @@ function candidateMatchesCrewEvent(
   candidate: MatchCandidate,
   event: Pick<EventRecord, "id" | "title">
 ) {
-  if (candidate.eventId && candidate.eventId === event.id) return true;
-  const candidateEventName = normalizeMatchEventKey(candidate.eventName ?? null);
-  const eventTitle = normalizeMatchEventKey(event.title);
-  return Boolean(candidateEventName && eventTitle && candidateEventName === eventTitle);
+  return Boolean(candidate.eventId && candidate.eventId === event.id);
+}
+
+function candidateMatchesProfilePreferences(candidate: MatchCandidate, profileDraft: { interestedGenders: string[]; preferredAgeMin: number | null; preferredAgeMax: number | null }) {
+  const interested = profileDraft.interestedGenders;
+  if (interested.length > 0) {
+    const candidateGender = (candidate.gender ?? "").trim().toLowerCase();
+    if (!candidateGender) {
+      return false;
+    }
+    const genderMatch = interested.some((value) => value.trim().toLowerCase() === candidateGender);
+    if (!genderMatch) {
+      return false;
+    }
+  }
+
+  const hasAgeConstraint = typeof profileDraft.preferredAgeMin === "number" || typeof profileDraft.preferredAgeMax === "number";
+  if (hasAgeConstraint && typeof candidate.age !== "number") {
+    return false;
+  }
+  if (typeof candidate.age === "number") {
+    if (typeof profileDraft.preferredAgeMin === "number" && candidate.age < profileDraft.preferredAgeMin) {
+      return false;
+    }
+    if (typeof profileDraft.preferredAgeMax === "number" && candidate.age > profileDraft.preferredAgeMax) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function compactGenreLabel(value: string | null | undefined) {
+  const raw = (value ?? "").trim();
+  if (!raw) {
+    return "EVENT";
+  }
+  const token = raw.replace(/[&/,+]/g, " ").split(/\s+/).filter(Boolean)[0] ?? "Event";
+  return token.slice(0, 12).toUpperCase();
 }
 
 function formatEventDateShort(startsAt: string) {
@@ -1468,10 +1634,17 @@ const styles = StyleSheet.create({
     opacity: 0.82
   },
   crewGatewayCardShellArt: {
-    height: 118,
+    height: 188,
     overflow: "hidden",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20
+  },
+  crewGatewayFlyerImage: {
+    ...StyleSheet.absoluteFillObject
+  },
+  crewGatewayFlyerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(9,10,14,0.18)"
   },
   crewGatewayGlowA: {
     position: "absolute",
@@ -1556,9 +1729,9 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.16)",
-    backgroundColor: "rgba(8,8,8,0.42)",
-    paddingHorizontal: 12,
-    paddingVertical: 7
+    backgroundColor: "rgba(8,8,8,0.28)",
+    paddingHorizontal: 11,
+    paddingVertical: 6
   },
   crewGatewayHeroGenreChipText: {
     color: "#FFF8EE",
@@ -1567,14 +1740,14 @@ const styles = StyleSheet.create({
     letterSpacing: 0.9
   },
   crewGatewayHeroMetricBubble: {
-    borderRadius: 20,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.10)",
-    backgroundColor: "rgba(10,9,12,0.42)",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    backgroundColor: "rgba(10,9,12,0.26)",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     alignItems: "flex-end",
-    minWidth: 124
+    minWidth: 118
   },
   crewGatewayHeroMetricPrimary: {
     color: "rgba(255,249,239,0.92)",
@@ -1589,7 +1762,7 @@ const styles = StyleSheet.create({
   crewGatewayCardBody: {
     backgroundColor: "#151311",
     padding: 14,
-    gap: 12
+    gap: 10
   },
   crewGatewaySquareTitle: {
     color: "#FFF8EE",
@@ -1719,6 +1892,18 @@ const styles = StyleSheet.create({
     fontSize: 26,
     lineHeight: 24,
     fontWeight: "500"
+  },
+  crewGatewayLeaveAction: {
+    alignSelf: "flex-start",
+    paddingTop: 2,
+    paddingHorizontal: 2,
+    paddingBottom: 2
+  },
+  crewGatewayLeaveActionText: {
+    color: "rgba(255,249,239,0.52)",
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "600"
   },
   inboxSegmentRow: {
     flexDirection: "row",
@@ -1857,6 +2042,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     overflow: "hidden"
+  },
+  profilePhotoImage: {
+    ...StyleSheet.absoluteFillObject
   },
   photoGlow: {
     position: "absolute",
@@ -2190,6 +2378,11 @@ const styles = StyleSheet.create({
   },
   collapsedCardMetaMain: {
     gap: 4
+  },
+  photoIntentLine: {
+    color: "rgba(255,249,239,0.72)",
+    fontSize: 12,
+    fontWeight: "700"
   },
   inlineExpandChip: {
     alignSelf: "flex-start",

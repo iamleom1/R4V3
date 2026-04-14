@@ -52,7 +52,7 @@ Profile photos, messages, and reports are stored to provide the service and enfo
 
 ## Account deletion
 
-Users can contact support to request account deletion until self-serve account deletion is available in-app.
+Users can delete their account in-app from the Profile screen. Support can also assist with account deletion requests.
 
 ## Contact
 

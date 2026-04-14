@@ -18,11 +18,11 @@ rave,edm,events,festival,crew,music,techno,house,concerts,community
 
 ## Support URL
 
-Replace with your public support page URL.
+Required before submission. Replace with your public support page URL.
 
 ## Privacy policy URL
 
-Replace with your hosted privacy policy URL.
+Required before submission. Replace with your hosted privacy policy URL.
 
 ## Suggested screenshot set
 

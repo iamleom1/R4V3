@@ -16,6 +16,10 @@ export function validateProfileDraft(draft: ProfileDraft): ProfileDraftValidatio
     errors.push("Birthdate is required.");
   }
 
+  if (!draft.gender.trim()) {
+    errors.push("Gender is required.");
+  }
+
   if (!draft.guidelinesAccepted) {
     errors.push("Guidelines must be accepted.");
   }
@@ -30,6 +34,9 @@ export function toProfileUpsertInput(draft: ProfileDraft) {
     birthdate: draft.birthdate || null,
     city: draft.city.trim() || null,
     gender: draft.gender.trim() || null,
+    interested_genders: draft.interestedGenders,
+    preferred_age_min: typeof draft.preferredAgeMin === "number" ? draft.preferredAgeMin : null,
+    preferred_age_max: typeof draft.preferredAgeMax === "number" ? draft.preferredAgeMax : null,
     height: draft.height.trim() || null,
     zodiac: draft.zodiac.trim() || null,
     education: draft.education.trim() || null,
