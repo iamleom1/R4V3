@@ -14,6 +14,8 @@
     "test:mobile": "pnpm --filter @r4v3/mobile test",
     "test:edm": "node --test scripts/test/*.test.mjs",
     "ingest:edm": "node scripts/ingest-edm-events.mjs",
+    "seed:demo": "node scripts/seed-demo-accounts.mjs",
+    "reset:demo": "node scripts/reset-demo-accounts.mjs",
     "healthcheck:edm": "node scripts/healthcheck-edm-ingest.mjs",
     "run:edm:ingest": "node scripts/run-edm-job.mjs ingest",
     "run:edm:healthcheck": "node scripts/run-edm-job.mjs healthcheck"

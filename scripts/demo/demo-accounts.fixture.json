@@ -1,0 +1,154 @@
+{
+  "defaults": {
+    "emailDomain": "demo.r4v3.local",
+    "password": "R4V3demo!2026",
+    "city": "Los Angeles",
+    "location": {
+      "lat": 34.0522,
+      "lng": -118.2437,
+      "accuracyMeters": 50
+    },
+    "preferredAgeMin": 21,
+    "preferredAgeMax": 35,
+    "communityModeEnabled": true,
+    "datingModeEnabled": false,
+    "onboardingCompleted": true
+  },
+  "profiles": [
+    {
+      "handle": "alex-m",
+      "displayName": "Alex M",
+      "bio": "Pulling up solo, down to meet a chill crew",
+      "vibeTags": ["Solo-friendly", "Chill meetup", "Small crew"],
+      "musicGenres": ["Tech House", "House"],
+      "intent": "going",
+      "lookingForCrew": true
+    },
+    {
+      "handle": "jasmine-r",
+      "displayName": "Jasmine R",
+      "bio": "Going with 2 friends but open to linking up",
+      "vibeTags": ["Small crew", "Open crew", "High energy"],
+      "musicGenres": ["Techno", "Melodic Techno"],
+      "intent": "going",
+      "lookingForCrew": true
+    },
+    {
+      "handle": "kevin-l",
+      "displayName": "Kevin L",
+      "bio": "Mainly here for the music, might be down to meet people",
+      "vibeTags": ["Solo-friendly", "Stick together"],
+      "musicGenres": ["Progressive", "Trance"],
+      "intent": "interested",
+      "lookingForCrew": false
+    },
+    {
+      "handle": "brianna-s",
+      "displayName": "Brianna S",
+      "bio": "Afters if the vibe is right",
+      "vibeTags": ["Afters", "High energy", "Open crew"],
+      "musicGenres": ["Tech House", "Bass"],
+      "intent": "going",
+      "lookingForCrew": true
+    },
+    {
+      "handle": "daniel-k",
+      "displayName": "Daniel K",
+      "bio": "First time at this venue, seeing what it's like",
+      "vibeTags": ["Solo-friendly", "Chill meetup"],
+      "musicGenres": ["House", "Deep House"],
+      "intent": "interested",
+      "lookingForCrew": true
+    },
+    {
+      "handle": "marcus-t",
+      "displayName": "Marcus T",
+      "bio": "Rolling with a small group, maybe down to merge crews",
+      "vibeTags": ["Small crew", "Open crew", "High energy"],
+      "musicGenres": ["Techno", "Hardstyle"],
+      "intent": "going",
+      "lookingForCrew": true
+    },
+    {
+      "handle": "emily-v",
+      "displayName": "Emily V",
+      "bio": "Just trying to dance all night",
+      "vibeTags": ["Dance-focused", "High energy"],
+      "musicGenres": ["Tech House", "Bass"],
+      "intent": "going",
+      "lookingForCrew": false
+    },
+    {
+      "handle": "ryan-c",
+      "displayName": "Ryan C",
+      "bio": "Pregaming first, getting there later",
+      "vibeTags": ["Pregame", "Small crew", "Chill meetup"],
+      "musicGenres": ["House", "Progressive"],
+      "intent": "going",
+      "lookingForCrew": true
+    },
+    {
+      "handle": "natalie-g",
+      "displayName": "Natalie G",
+      "bio": "Solo tonight, looking for a fun group",
+      "vibeTags": ["Solo-friendly", "Open crew", "High energy"],
+      "musicGenres": ["Tech House", "Melodic Techno"],
+      "intent": "going",
+      "lookingForCrew": true
+    },
+    {
+      "handle": "chris-d",
+      "displayName": "Chris D",
+      "bio": "Might go depending on who's going",
+      "vibeTags": ["Solo-friendly", "Chill meetup"],
+      "musicGenres": ["House", "Trance"],
+      "intent": "interested",
+      "lookingForCrew": true
+    },
+    {
+      "handle": "sofia-p",
+      "displayName": "Sofia P",
+      "bio": "Going for the music, not trying to do too much",
+      "vibeTags": ["Chill meetup", "Stick together"],
+      "musicGenres": ["Deep House", "Tech House"],
+      "intent": "going",
+      "lookingForCrew": false
+    },
+    {
+      "handle": "jordan-w",
+      "displayName": "Jordan W",
+      "bio": "Always down for afters if the night's good",
+      "vibeTags": ["Afters", "High energy", "Open crew"],
+      "musicGenres": ["Techno", "Drum & Bass"],
+      "intent": "going",
+      "lookingForCrew": true
+    },
+    {
+      "handle": "tyler-b",
+      "displayName": "Tyler B",
+      "bio": "Rolling solo, seeing what happens",
+      "vibeTags": ["Solo-friendly", "Open crew"],
+      "musicGenres": ["Bass", "Dubstep"],
+      "intent": "interested",
+      "lookingForCrew": true
+    },
+    {
+      "handle": "amanda-h",
+      "displayName": "Amanda H",
+      "bio": "Going with friends but open to meeting people",
+      "vibeTags": ["Small crew", "Open crew", "Chill meetup"],
+      "musicGenres": ["House", "Melodic Techno"],
+      "intent": "going",
+      "lookingForCrew": true
+    },
+    {
+      "handle": "eric-j",
+      "displayName": "Eric J",
+      "bio": "Not sure yet, depends on the vibe",
+      "vibeTags": ["Chill meetup", "Solo-friendly"],
+      "musicGenres": ["Progressive", "House"],
+      "intent": "interested",
+      "lookingForCrew": false
+    }
+  ]
+}
