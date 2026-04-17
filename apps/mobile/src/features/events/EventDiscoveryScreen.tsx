@@ -1,12 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Slider from "@react-native-community/slider";
+import * as Location from "expo-location";
 import {
   ActivityIndicator,
   Alert,
   Animated,
   Dimensions,
   Easing,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -17,6 +22,8 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useFocusEffect } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppState } from "../../app/AppProvider";
+import { RemoteImage, prefetchRemoteImages } from "../../components/RemoteImage";
+import { toUserFacingError } from "../../lib/userFacingErrors";
 import { theme } from "../../theme";
 import type { EventRecord, RSVPStatus } from "../../types/domain";
 import {
@@ -24,14 +31,68 @@ import {
   listEventAudienceMetrics,
   listUpcomingEvents
 } from "./eventRepository";
+import { captureCurrentDeviceLocation } from "../profile/deviceLocationService";
 import type { DiscoverStackParamList } from "./DiscoverNavigator";
 import { useEventRsvpState } from "./useEventRsvpState";
 
 type Props = NativeStackScreenProps<DiscoverStackParamList, "DiscoverHome">;
 type AddEventStep = "choice" | "organizer" | "form" | "success";
 type AddEventFlowType = "community" | "promoter" | null;
+type DiscoverSortTab = "top" | "this_weekend" | "nearest" | "most_active" | "soonest";
 
-const EVENT_GENRE_OPTIONS = ["House", "Tech House", "Techno", "Dubstep", "Trance", "Drum & Bass", "Hardstyle", "Bass"];
+const EVENT_GENRE_OPTIONS = ["Afters", "House", "Tech House", "Techno", "Hard Techno", "Dubstep", "Trance", "Drum & Bass", "Hardstyle", "Bass"];
+const EVENT_GENRE_MATCHERS: Record<string, string[]> = {
+  "House": ["house", "progressive house", "afro house", "deep house"],
+  "Tech House": ["tech house"],
+  "Techno": ["techno", "melodic techno"],
+  "Hard Techno": ["hard techno", "hardtechno", "industrial techno", "peak time techno", "hardgroove", "schranz"],
+  "Dubstep": ["dubstep", "brostep", "riddim"],
+  "Trance": ["trance"],
+  "Drum & Bass": ["drum & bass", "drum and bass", "dnb"],
+  "Hardstyle": ["hardstyle"],
+  "Bass": ["bass", "future bass", "trap", "bass music"],
+  "Afters": ["afters", "afterparty", "after party", "afterhours", "after hours"]
+};
+const DISCOVER_PREVIEW_LIMIT = 20;
+const DISCOVER_PAGE_SIZE = 20;
+const RADIUS_OPTIONS = [
+  { label: "25 mi", value: 25 },
+  { label: "50 mi", value: 50 },
+  { label: "100 mi", value: 100 },
+  { label: "All SoCal", value: null }
+] as const;
+const DISCOVER_SORT_OPTIONS: Array<{ key: DiscoverSortTab; label: string }> = [
+  { key: "top", label: "🔥 Top" },
+  { key: "nearest", label: "📍 Nearest" },
+  { key: "most_active", label: "⚡ Most Active" },
+  { key: "soonest", label: "⏰ Starting Soon" },
+  { key: "this_weekend", label: "📅 This Weekend" }
+];
+const DISCOVER_SORT_GROUPS: Array<{ title: string; options: Array<{ key: DiscoverSortTab; label: string }> }> = [
+  {
+    title: "RELEVANCE",
+    options: [
+      { key: "top", label: "🔥 Top" },
+      { key: "most_active", label: "⚡ Most Active" }
+    ]
+  },
+  {
+    title: "LOCATION",
+    options: [{ key: "nearest", label: "📍 Nearest" }]
+  },
+  {
+    title: "TIME",
+    options: [
+      { key: "this_weekend", label: "📅 This Weekend" },
+      { key: "soonest", label: "⏰ Starting Soon" }
+    ]
+  }
+];
+
+const RUNTIME_CITY_CENTERS: Record<string, { lat: number; lng: number }> = {};
+const RUNTIME_CITY_CENTER_MISSES = new Set<string>();
+const LOS_ANGELES_CENTER = { lat: 34.0522, lng: -118.2437 };
+const LA_FALLBACK_MIN_RESULTS = 18;
 
 export function EventDiscoveryScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
@@ -43,38 +104,136 @@ export function EventDiscoveryScreen({ navigation }: Props) {
     eventGridColumns === 2
       ? Math.floor((screenWidth - horizontalPadding - gridGap) / 2)
       : Math.max(280, Math.floor(screenWidth - horizontalPadding));
-  const { session } = useAppState();
+  const { session, profileDraft, updateProfileDraft, saveProfileDraft } = useAppState();
   const [events, setEvents] = useState<EventRecord[]>([]);
   const { rsvps, setRsvp, refreshRsvps } = useEventRsvpState(session?.user?.id ?? null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasMoreEvents, setHasMoreEvents] = useState(true);
   const [isSavingId, setIsSavingId] = useState<string | null>(null);
   const [selectedGenre, setSelectedGenre] = useState<string>("All");
+  const [selectedRadiusMiles, setSelectedRadiusMiles] = useState<number | null>(null);
+  const [activeSortTab, setActiveSortTab] = useState<DiscoverSortTab>("top");
+  const [isSortDropdownOpen, setIsSortDropdownOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isLocating, setIsLocating] = useState(false);
+  const [, setResolvedCityCentersVersion] = useState(0);
   const [audienceMetrics, setAudienceMetrics] = useState<Record<string, { goingCount: number; lookingForCrewCount: number }>>({});
+  const [stableRankedEventIds, setStableRankedEventIds] = useState<string[]>([]);
+  const [activePreviewEventId, setActivePreviewEventId] = useState<string | null>(null);
+  const previewNoticeShownRef = useRef(false);
 
   const availableGenres = useMemo(() => {
-    const set = new Set<string>();
-    for (const event of events) {
-      for (const tag of event.genreTags ?? []) {
-        if (tag.trim()) {
-          set.add(tag);
-        }
-      }
+    return ["All", ...EVENT_GENRE_OPTIONS];
+  }, []);
+  const viewerLocation = useMemo(() => {
+    if (typeof profileDraft.locationLat === "number" && typeof profileDraft.locationLng === "number") {
+      return { lat: profileDraft.locationLat, lng: profileDraft.locationLng };
     }
-    return ["All", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
-  }, [events]);
+    if (profileDraft.city.trim()) {
+      return getCityCenter(profileDraft.city.trim());
+    }
+    return null;
+  }, [profileDraft.city, profileDraft.locationLat, profileDraft.locationLng]);
   const filteredEvents = useMemo(() => {
-    if (selectedGenre === "All") {
-      return events;
+    const genreFiltered =
+      selectedGenre === "All" ? events : events.filter((event) => eventMatchesGenre(event, selectedGenre));
+
+    if (!viewerLocation) {
+      return genreFiltered.filter((event) => {
+        const distance = getEventDistanceMiles(event, LOS_ANGELES_CENTER);
+        return distance !== null && distance <= 100;
+      });
     }
-    return events.filter((event) => (event.genreTags ?? []).includes(selectedGenre));
-  }, [events, selectedGenre]);
+
+    if (selectedRadiusMiles === null) {
+      return genreFiltered;
+    }
+
+    const nearby = genreFiltered.filter((event) => {
+      const distance = getEventDistanceMiles(event, viewerLocation);
+      return distance !== null && distance <= selectedRadiusMiles;
+    });
+
+    if (nearby.length >= LA_FALLBACK_MIN_RESULTS) {
+      return nearby;
+    }
+
+    const nearbyIds = new Set(nearby.map((event) => event.id));
+    const laFallback = genreFiltered.filter((event) => {
+      if (nearbyIds.has(event.id)) {
+        return false;
+      }
+      const distance = getEventDistanceMiles(event, LOS_ANGELES_CENTER);
+      return distance !== null && distance <= 100;
+    });
+
+    return [...nearby, ...laFallback];
+  }, [events, selectedGenre, selectedRadiusMiles, viewerLocation]);
   const rankedFilteredEvents = useMemo(() => {
-    return [...filteredEvents].sort(
-      (a, b) => scoreEventForDiscovery(b, audienceMetrics) - scoreEventForDiscovery(a, audienceMetrics)
+    return [...filteredEvents].sort((a, b) =>
+      compareEventsForDiscoveryTab(
+        a,
+        b,
+        activeSortTab,
+        audienceMetrics,
+        viewerLocation
+      )
     );
-  }, [audienceMetrics, filteredEvents]);
-  const weekendEvents = useMemo(() => getClosestWeekendEvents(events, audienceMetrics), [audienceMetrics, events]);
+  }, [activeSortTab, audienceMetrics, filteredEvents, viewerLocation]);
+  const rankingSignature = useMemo(
+    () =>
+      JSON.stringify({
+        sort: activeSortTab,
+        genre: selectedGenre,
+        radius: selectedRadiusMiles
+      }),
+    [activeSortTab, selectedGenre, selectedRadiusMiles]
+  );
+  const visibleRankedEvents = useMemo(() => {
+    const eventMap = new Map(rankedFilteredEvents.map((event) => [event.id, event]));
+    const ordered = stableRankedEventIds.map((id) => eventMap.get(id)).filter(Boolean) as EventRecord[];
+    return ordered;
+  }, [rankedFilteredEvents, stableRankedEventIds]);
+  const citySearchSummary = useMemo(() => {
+    if (!viewerLocation) {
+      return "Showing Los Angeles events by default.";
+    }
+    return `Showing events within ${selectedRadiusMiles} miles of your location.`;
+  }, [selectedRadiusMiles, viewerLocation]);
+  const activeLocationTitle = useMemo(() => {
+    if (!viewerLocation) {
+      return "Los Angeles • Default";
+    }
+    return `Current Location • ${selectedRadiusMiles} mi`;
+  }, [selectedRadiusMiles, viewerLocation]);
+  const activeLocationMeta = useMemo(() => {
+    if (!viewerLocation) {
+      return `${filteredEvents.length} LA events`;
+    }
+    return `${filteredEvents.length} in range`;
+  }, [filteredEvents.length, selectedRadiusMiles, viewerLocation]);
+  const viewerLocationLabel = useMemo(() => {
+    const city = profileDraft.city.trim();
+    if (city) {
+      return city;
+    }
+    return "Location unavailable";
+  }, [profileDraft.city]);
+  const radiusSliderValue = useMemo(() => {
+    const index = RADIUS_OPTIONS.findIndex((option) => option.value === selectedRadiusMiles);
+    return index >= 0 ? index : 1;
+  }, [selectedRadiusMiles]);
+  const featuredEvents = useMemo(
+    () =>
+      rankedFilteredEvents
+        .filter((event) => isEventCurrentlyFeatured(event))
+        .sort((a, b) => compareFeaturedEvents(a, b, viewerLocation))
+        .slice(0, 6),
+    [rankedFilteredEvents, viewerLocation]
+  );
+  const weekendEvents = useMemo(() => getClosestWeekendEvents(events, audienceMetrics, viewerLocation), [audienceMetrics, events, viewerLocation]);
   const weekendCarouselEvents = useMemo(
     () => (weekendEvents.length > 1 ? [...weekendEvents, weekendEvents[0]] : weekendEvents),
     [weekendEvents]
@@ -85,6 +244,7 @@ export function EventDiscoveryScreen({ navigation }: Props) {
   const [weekendIndex, setWeekendIndex] = useState(0);
   const [weekendAutoRotateEnabled, setWeekendAutoRotateEnabled] = useState(true);
   const [showAddEventModal, setShowAddEventModal] = useState(false);
+  const [showLocationFilterModal, setShowLocationFilterModal] = useState(false);
   const [addEventStep, setAddEventStep] = useState<AddEventStep>("choice");
   const [addEventFlowType, setAddEventFlowType] = useState<AddEventFlowType>(null);
   const [organizerBrandName, setOrganizerBrandName] = useState("");
@@ -101,31 +261,201 @@ export function EventDiscoveryScreen({ navigation }: Props) {
   const [eventLink, setEventLink] = useState("");
   const [eventConfirmReal, setEventConfirmReal] = useState(false);
   const [showOptionalDetails, setShowOptionalDetails] = useState(false);
+  const lastEventDiscoveryFetchAtRef = useRef(0);
+  const loadedEventCountRef = useRef(0);
+  const isLoadingMoreRef = useRef(false);
+  const hasMoreEventsRef = useRef(true);
+  const hasStartedDiscoveryScrollRef = useRef(false);
+  const lastLoadMoreStartedAtRef = useRef(0);
+  const loadMoreHideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sortSelectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [sortSelectionFeedbackKey, setSortSelectionFeedbackKey] = useState<DiscoverSortTab | null>(null);
 
   const loadEventDiscovery = useCallback(
-    async (showSpinner = true) => {
-      if (showSpinner) {
+    async ({ reset = false, showSpinner = false, refreshing = false } = {}) => {
+      if (showSpinner && reset) {
         setIsLoading(true);
+      }
+      if (refreshing) {
+        setIsRefreshing(true);
+      }
+      if (!reset) {
+        isLoadingMoreRef.current = true;
+        lastLoadMoreStartedAtRef.current = Date.now();
+        setIsLoadingMore(true);
       }
       setError(null);
 
       try {
-        const eventRows = await listUpcomingEvents();
-        setEvents(eventRows);
+        const nextOffset = reset ? 0 : loadedEventCountRef.current;
+        const eventRows = await listUpcomingEvents(DISCOVER_PAGE_SIZE, nextOffset);
+        setEvents((prev) => {
+          if (reset) {
+            return eventRows;
+          }
+          const merged = new Map(prev.map((event) => [event.id, event]));
+          for (const event of eventRows) {
+            merged.set(event.id, event);
+          }
+          return Array.from(merged.values());
+        });
+        loadedEventCountRef.current = reset ? eventRows.length : loadedEventCountRef.current + eventRows.length;
+        const nextHasMore = eventRows.length === DISCOVER_PAGE_SIZE;
+        hasMoreEventsRef.current = nextHasMore;
+        setHasMoreEvents(nextHasMore);
+        lastEventDiscoveryFetchAtRef.current = Date.now();
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load events.");
+        setError(toUserFacingError(e, "Failed to load events."));
       } finally {
-        if (showSpinner) {
+        if (showSpinner && reset) {
           setIsLoading(false);
+        }
+        if (refreshing) {
+          setIsRefreshing(false);
+        }
+        if (!reset) {
+          isLoadingMoreRef.current = false;
+          if (loadMoreHideTimeoutRef.current) {
+            clearTimeout(loadMoreHideTimeoutRef.current);
+          }
+          const elapsed = Date.now() - lastLoadMoreStartedAtRef.current;
+          const remaining = Math.max(0, 240 - elapsed);
+          loadMoreHideTimeoutRef.current = setTimeout(() => {
+            requestAnimationFrame(() => {
+              setIsLoadingMore(false);
+            });
+          }, remaining);
         }
       }
     },
     []
   );
 
-  useEffect(() => {
-    void loadEventDiscovery(true);
+  const handlePullToRefresh = useCallback(async () => {
+    loadedEventCountRef.current = 0;
+    hasMoreEventsRef.current = true;
+    hasStartedDiscoveryScrollRef.current = false;
+    await loadEventDiscovery({ reset: true, showSpinner: false, refreshing: true });
   }, [loadEventDiscovery]);
+
+  useEffect(() => {
+    void loadEventDiscovery({ reset: true, showSpinner: true });
+  }, [loadEventDiscovery]);
+
+  useEffect(() => {
+    return () => {
+      if (loadMoreHideTimeoutRef.current) {
+        clearTimeout(loadMoreHideTimeoutRef.current);
+      }
+      if (sortSelectionTimeoutRef.current) {
+        clearTimeout(sortSelectionTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!availableGenres.includes(selectedGenre)) {
+      setSelectedGenre("All");
+    }
+  }, [availableGenres, selectedGenre]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function hydrateCityCenters() {
+      const cityCandidates = Array.from(
+        new Set(
+          [profileDraft.city, ...events.map((event) => event.city)]
+            .map((city) => city?.trim() ?? "")
+            .filter(Boolean)
+        )
+      );
+
+      let resolvedAny = false;
+      for (const city of cityCandidates) {
+        const normalized = normalizeCityKey(city);
+        if (!normalized || getCityCenter(city) || RUNTIME_CITY_CENTER_MISSES.has(normalized)) {
+          continue;
+        }
+
+        try {
+          const results = await Location.geocodeAsync(city);
+          const first = results[0];
+          if (cancelled) {
+            return;
+          }
+          if (typeof first?.latitude === "number" && typeof first?.longitude === "number") {
+            RUNTIME_CITY_CENTERS[normalized] = { lat: first.latitude, lng: first.longitude };
+            resolvedAny = true;
+          } else {
+            RUNTIME_CITY_CENTER_MISSES.add(normalized);
+          }
+        } catch {
+          RUNTIME_CITY_CENTER_MISSES.add(normalized);
+        }
+      }
+
+      if (!cancelled && resolvedAny) {
+        setResolvedCityCentersVersion((value) => value + 1);
+      }
+    }
+
+    void hydrateCityCenters();
+    return () => {
+      cancelled = true;
+    };
+  }, [events, profileDraft.city]);
+
+  const handleUseCurrentLocation = useCallback(async () => {
+    setIsLocating(true);
+    try {
+      const result = await captureCurrentDeviceLocation();
+      if (!result.ok) {
+        Alert.alert("Couldn’t get location", result.error);
+        return;
+      }
+
+      const nextDraft = {
+        ...profileDraft,
+        city: result.location.city ?? profileDraft.city,
+        locationLat: result.location.latitude,
+        locationLng: result.location.longitude,
+        locationAccuracyMeters: result.location.accuracyMeters,
+        locationCapturedAt: result.location.capturedAt
+      };
+      updateProfileDraft(nextDraft);
+      setSelectedRadiusMiles((current) => current ?? 25);
+      await saveProfileDraft({ draftOverride: nextDraft });
+    } finally {
+      setIsLocating(false);
+    }
+  }, [profileDraft, saveProfileDraft, updateProfileDraft]);
+
+  const lastRankingSignatureRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    setStableRankedEventIds((prev) => {
+      const nextIds = rankedFilteredEvents.map((event) => event.id);
+      if (lastRankingSignatureRef.current !== rankingSignature) {
+        lastRankingSignatureRef.current = rankingSignature;
+        return nextIds;
+      }
+
+      const nextIdSet = new Set(nextIds);
+      const kept = prev.filter((id) => nextIdSet.has(id));
+      const keptSet = new Set(kept);
+      const appended = nextIds.filter((id) => !keptSet.has(id));
+      return [...kept, ...appended];
+    });
+  }, [rankedFilteredEvents, rankingSignature]);
+
+  useEffect(() => {
+    prefetchRemoteImages(
+      visibleRankedEvents
+        .slice(0, Math.min(events.length + DISCOVER_PAGE_SIZE, visibleRankedEvents.length))
+        .map((event) => event.flyerUrl)
+    );
+  }, [events.length, visibleRankedEvents]);
 
   useEffect(() => {
     let active = true;
@@ -142,12 +472,64 @@ export function EventDiscoveryScreen({ navigation }: Props) {
     };
   }, [events]);
 
+  const handleMusicPreviewPress = useCallback(async (event: EventRecord) => {
+    if (!event.musicPreviewUrl?.trim()) {
+      return;
+    }
+
+    setActivePreviewEventId((current) => (current === event.id ? null : event.id));
+
+    if (!previewNoticeShownRef.current) {
+      previewNoticeShownRef.current = true;
+      Alert.alert(
+        "Preview pending dev build",
+        "The in-app play control is in place, but inline audio playback needs a dev build instead of Expo Go."
+      );
+    }
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
       // Keep card RSVP state in sync after actions taken on detail screen.
       void refreshRsvps();
-      void loadEventDiscovery(false);
-    }, [loadEventDiscovery, refreshRsvps])
+      const hasEvents = events.length > 0;
+      const isStale = Date.now() - lastEventDiscoveryFetchAtRef.current > 30_000;
+      if (!hasEvents || isStale) {
+        loadedEventCountRef.current = 0;
+        hasMoreEventsRef.current = true;
+        hasStartedDiscoveryScrollRef.current = false;
+        void loadEventDiscovery({ reset: true, showSpinner: !hasEvents });
+      }
+    }, [events.length, loadEventDiscovery, refreshRsvps])
+  );
+
+  const handleDiscoveryScroll = useCallback(
+    (event: any) => {
+      const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+      if (!hasStartedDiscoveryScrollRef.current) {
+        return;
+      }
+
+      if (contentSize.height <= layoutMeasurement.height * 1.1) {
+        return;
+      }
+
+      const threshold = contentSize.height * 0.8;
+      const viewportBottom = contentOffset.y + layoutMeasurement.height;
+
+      if (
+        viewportBottom < threshold ||
+        isLoading ||
+        isLoadingMoreRef.current ||
+        !hasMoreEventsRef.current ||
+        Date.now() - lastLoadMoreStartedAtRef.current < 500
+      ) {
+        return;
+      }
+
+      void loadEventDiscovery({ reset: false, showSpinner: false });
+    },
+    [isLoading, loadEventDiscovery]
   );
 
   useEffect(() => {
@@ -181,18 +563,22 @@ export function EventDiscoveryScreen({ navigation }: Props) {
       return;
     }
 
-    setIsSavingId(eventId);
-    setError(null);
+    try {
+      setIsSavingId(eventId);
+      setError(null);
 
-    const result = await setRsvp(eventId, status);
-    if (!result.ok) {
-      setError(result.error);
+      const result = await setRsvp(eventId, status);
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      const metrics = await listEventAudienceMetrics([eventId]);
+      setAudienceMetrics((prev) => ({ ...prev, ...metrics }));
+    } catch (error) {
+      setError(toUserFacingError(error, "Couldn’t update your RSVP."));
+    } finally {
       setIsSavingId(null);
-      return;
     }
-    const metrics = await listEventAudienceMetrics([eventId]);
-    setAudienceMetrics((prev) => ({ ...prev, ...metrics }));
-    setIsSavingId(null);
   }
 
   async function confirmThenUnattend(eventId: string) {
@@ -321,14 +707,38 @@ export function EventDiscoveryScreen({ navigation }: Props) {
     setShowAddEventModal(true);
   }
 
+  function handleSelectSortOption(nextSort: DiscoverSortTab) {
+    if (sortSelectionTimeoutRef.current) {
+      clearTimeout(sortSelectionTimeoutRef.current);
+    }
+    setActiveSortTab(nextSort);
+    setSortSelectionFeedbackKey(nextSort);
+    sortSelectionTimeoutRef.current = setTimeout(() => {
+      setSortSelectionFeedbackKey(null);
+      setIsSortDropdownOpen(false);
+    }, 130);
+  }
+
   return (
     <View style={styles.screenRoot}>
       <ScrollView
         contentContainerStyle={[styles.container, { paddingTop: Math.max(insets.top + 8, 22) }]}
-        onScrollBeginDrag={pauseWeekendAutoRotate}
+        onScrollBeginDrag={() => {
+          hasStartedDiscoveryScrollRef.current = true;
+          pauseWeekendAutoRotate();
+        }}
+        onScroll={handleDiscoveryScroll}
         scrollEventThrottle={16}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefreshing}
+            onRefresh={() => void handlePullToRefresh()}
+            tintColor={theme.colors.accent}
+            progressBackgroundColor="#1A1712"
+          />
+        }
       >
       <View style={styles.pageHeader}>
         <View style={styles.pageHeaderBrandRow}>
@@ -342,10 +752,10 @@ export function EventDiscoveryScreen({ navigation }: Props) {
 
       <View style={styles.weekendSection}>
         <View style={styles.sectionHeaderRow}>
-          <Text style={styles.sectionTitle}>Happening This Weekend</Text>
+          <Text style={styles.sectionTitle}>🔥 Top Picks This Weekend</Text>
           <Text style={styles.sectionMeta}>{weekendEvents.length} events</Text>
         </View>
-        <Text style={styles.weekendSubtitle}>Closest Thursday, Friday, and Saturday picks.</Text>
+        <Text style={styles.weekendSubtitle}>Trending picks across Thursday, Friday, and Saturday.</Text>
         <ScrollView
           ref={weekendRailRef}
           horizontal
@@ -381,10 +791,20 @@ export function EventDiscoveryScreen({ navigation }: Props) {
                   navigation.navigate("WeekendEvents", { weekendEvents, selectedEventId: event.id });
                 }}
               >
-                <View style={[styles.weekendGlowA, { backgroundColor: palette.glowA }]} />
-                <View style={[styles.weekendGlowB, { backgroundColor: palette.glowB }]} />
-                <View style={[styles.weekendBeam, { backgroundColor: palette.lineA, transform: [{ rotate: "-8deg" }] }]} />
-                <View style={[styles.weekendBeam, styles.weekendBeamAlt, { backgroundColor: palette.lineB, transform: [{ rotate: "7deg" }] }]} />
+                <FlyerSurface
+                  uri={event.flyerUrl}
+                  imageStyle={styles.weekendFlyerImage}
+                  fallback={
+                    <>
+                      <View style={[styles.weekendGlowA, { backgroundColor: palette.glowA }]} />
+                      <View style={[styles.weekendGlowB, { backgroundColor: palette.glowB }]} />
+                      <View style={[styles.weekendBeam, { backgroundColor: palette.lineA, transform: [{ rotate: "-8deg" }] }]} />
+                      <View style={[styles.weekendBeam, styles.weekendBeamAlt, { backgroundColor: palette.lineB, transform: [{ rotate: "7deg" }] }]} />
+                    </>
+                  }
+                >
+                  {event.flyerUrl ? <View style={styles.weekendFlyerOverlay} /> : null}
+                </FlyerSurface>
                 <Text style={styles.weekendDay}>{formatWeekendDay(event.startsAt)}</Text>
                 <Text style={styles.weekendTitle} numberOfLines={2}>{event.title}</Text>
                 <Text style={styles.weekendMeta} numberOfLines={1}>{event.city || "City TBD"} • {formatEventDate(event.startsAt)}</Text>
@@ -396,13 +816,88 @@ export function EventDiscoveryScreen({ navigation }: Props) {
           })}
         </ScrollView>
         {weekendEvents.length > 1 ? <View style={styles.weekendCarouselDot} /> : null}
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+        {error ? (
+          <View style={styles.errorInlineCard}>
+            <Text style={styles.error}>{error}</Text>
+            <Pressable style={styles.errorInlineButton} onPress={() => void loadEventDiscovery({ reset: true, showSpinner: true })}>
+              <Text style={styles.errorInlineButtonText}>Retry</Text>
+            </Pressable>
+          </View>
+        ) : null}
       </View>
 
       <View style={styles.genreSection}>
-        <View style={styles.sectionHeaderRow}>
-          <Text style={styles.sectionTitle}>Browse by genre</Text>
-          <Text style={styles.sectionMeta}>{selectedGenre === "All" ? "All events" : selectedGenre}</Text>
+        {featuredEvents.length > 0 ? (
+          <View style={styles.featuredSection}>
+            <View style={styles.sectionHeaderRow}>
+              <Text style={styles.sectionTitle}>Featured Picks</Text>
+              <Text style={styles.sectionMeta}>{featuredEvents.length} curated</Text>
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.featuredRail}>
+              {featuredEvents.map((event, idx) => {
+                const metrics = audienceMetrics[event.id] ?? { goingCount: 0, lookingForCrewCount: 0 };
+                const palette = getWeekendBannerPalette(event, idx);
+                const distanceAway = viewerLocation ? getEventDistanceMiles(event, viewerLocation) : null;
+                const audienceSummary = formatAudienceSummary(metrics);
+                return (
+                  <Pressable
+                    key={`featured-${event.id}`}
+                    style={styles.featuredCard}
+                    onPress={() => navigation.navigate("EventDetail", { event })}
+                  >
+                    <FlyerSurface
+                      uri={event.flyerUrl}
+                      imageStyle={styles.featuredImage}
+                      fallback={
+                        <View style={[styles.featuredImageFallback, { backgroundColor: palette.base }]}>
+                          <View style={[styles.weekendGlowA, { backgroundColor: palette.glowA }]} />
+                          <View style={[styles.weekendGlowB, { backgroundColor: palette.glowB }]} />
+                          <View style={[styles.weekendBeam, { backgroundColor: palette.lineA, transform: [{ rotate: "-8deg" }] }]} />
+                          <View style={[styles.weekendBeam, styles.weekendBeamAlt, { backgroundColor: palette.lineB, transform: [{ rotate: "7deg" }] }]} />
+                        </View>
+                      }
+                    />
+                    <View style={styles.featuredOverlay} />
+                    <View style={styles.featuredBody}>
+                      <View style={styles.featuredPill}>
+                        <Text style={styles.featuredPillText}>R4V3 PICK</Text>
+                      </View>
+                      <Text style={styles.featuredTitle} numberOfLines={2}>{event.title}</Text>
+                      <Text style={styles.featuredMeta} numberOfLines={1}>
+                        {[event.city || "City TBD", formatEventDate(event.startsAt)].join(" • ")}
+                      </Text>
+                      {distanceAway !== null ? (
+                        <Text style={styles.distanceMeta} numberOfLines={1}>{formatDistanceAway(distanceAway)}</Text>
+                      ) : null}
+                      {audienceSummary ? (
+                        <Text style={styles.featuredSubmeta} numberOfLines={1}>
+                          {audienceSummary}
+                        </Text>
+                      ) : null}
+                    </View>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </View>
+        ) : null}
+
+        <View style={styles.discoveryControlRow}>
+          <View style={styles.sectionHeaderRowCompact}>
+            <Text style={styles.sectionTitle}>Browse by genre</Text>
+            <Text style={styles.sectionMeta}>{selectedGenre === "All" ? "All events" : selectedGenre}</Text>
+          </View>
+          <Pressable
+            style={styles.locationTrigger}
+            accessibilityRole="button"
+            accessibilityLabel="Open location filter"
+            onPress={() => setShowLocationFilterModal(true)}
+          >
+            <Text style={styles.locationTriggerGlyphText}>⌖</Text>
+            <Text style={styles.locationTriggerValue} numberOfLines={1}>
+              {activeLocationTitle}
+            </Text>
+          </Pressable>
         </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.genreRail}>
           {availableGenres.map((genre) => {
@@ -418,8 +913,23 @@ export function EventDiscoveryScreen({ navigation }: Props) {
 
       <View style={styles.sectionHeaderRow}>
         <Text style={styles.sectionTitle}>Upcoming events</Text>
-        <Text style={styles.sectionMeta}>{isLoading ? "Loading" : events.length > 0 ? "Live" : "No events"}</Text>
+        <View style={styles.upcomingHeaderActions}>
+          <Pressable style={styles.sortDropdownTrigger} onPress={() => setIsSortDropdownOpen(true)}>
+            <Text style={styles.sortDropdownTriggerText}>
+              {`Sort: ${DISCOVER_SORT_OPTIONS.find((option) => option.key === activeSortTab)?.label ?? "🔥 Top"}`}
+            </Text>
+            <Text style={styles.sortDropdownTriggerGlyph}>▾</Text>
+          </Pressable>
+          <Text style={styles.sectionMeta}>{isLoading ? "Loading" : rankedFilteredEvents.length > 0 ? `${rankedFilteredEvents.length} shown` : "No events"}</Text>
+        </View>
       </View>
+      {!isLoading && rankedFilteredEvents.length > 0 ? (
+        <Text style={styles.upcomingSupportText}>
+          {events.length > DISCOVER_PREVIEW_LIMIT
+            ? `${rankedFilteredEvents.length} events loaded. Scroll for more.`
+            : `Showing the first ${Math.min(DISCOVER_PREVIEW_LIMIT, rankedFilteredEvents.length)} events.`}
+        </Text>
+      ) : null}
 
       {isLoading ? (
         <View style={styles.loadingRow}>
@@ -429,14 +939,16 @@ export function EventDiscoveryScreen({ navigation }: Props) {
       ) : null}
 
       <View style={styles.eventCardList}>
-        {rankedFilteredEvents.map((event, idx) => {
+        {visibleRankedEvents.map((event, idx) => {
           const currentRsvp = rsvps[event.id];
           const saving = isSavingId === event.id;
           const palette = getEventTilePalette(event, idx);
           const metrics = audienceMetrics[event.id] ?? { goingCount: 0, lookingForCrewCount: 0 };
+          const distanceAway = viewerLocation ? getEventDistanceMiles(event, viewerLocation) : null;
           const goingCount = metrics.goingCount;
           const crewCount = metrics.lookingForCrewCount;
           const listingLabel = getEventListingLabel(event);
+          const hasAudienceMetrics = goingCount > 0 || crewCount > 0;
           return (
             <View
               key={event.id}
@@ -451,23 +963,46 @@ export function EventDiscoveryScreen({ navigation }: Props) {
                 onPress={() => navigation.navigate("EventDetail", { event })}
               >
                 <View style={[styles.eventPoster, { backgroundColor: palette.base }]}>
-                  <View style={[styles.tileGlow, { backgroundColor: palette.glow }]} />
-                  <View style={[styles.eventPosterGlowBottom, { backgroundColor: palette.glow }]} />
-                  <View style={[styles.tileBeam, { backgroundColor: palette.beamA, transform: [{ rotate: "-14deg" }] }]} />
-                  <View style={[styles.tileBeam, styles.tileBeamAlt, { backgroundColor: palette.beamB, transform: [{ rotate: "12deg" }] }]} />
-                  <View style={[styles.tileBeamThin, { backgroundColor: palette.line }]} />
-                  <View style={styles.eventPosterGrid} />
+                  <FlyerSurface
+                    uri={event.flyerUrl}
+                    imageStyle={styles.eventPosterFlyerImage}
+                    fallback={
+                      <>
+                        <View style={[styles.tileGlow, { backgroundColor: palette.glow }]} />
+                        <View style={[styles.eventPosterGlowBottom, { backgroundColor: palette.glow }]} />
+                        <View style={[styles.tileBeam, { backgroundColor: palette.beamA, transform: [{ rotate: "-14deg" }] }]} />
+                        <View style={[styles.tileBeam, styles.tileBeamAlt, { backgroundColor: palette.beamB, transform: [{ rotate: "12deg" }] }]} />
+                        <View style={[styles.tileBeamThin, { backgroundColor: palette.line }]} />
+                        <View style={styles.eventPosterGrid} />
+                      </>
+                    }
+                  >
+                    {event.flyerUrl ? <View style={styles.eventPosterFlyerOverlay} /> : null}
+                    {event.flyerUrl ? <View style={styles.eventPosterBottomScrim} /> : null}
+                  </FlyerSurface>
                   <View style={styles.eventPosterTopRow}>
                     <View style={styles.eventPosterGenrePill}>
                       <Text style={styles.eventPosterGenrePillText}>
                         {((event.genreTags ?? [])[0] ?? "EDM").toUpperCase()}
                       </Text>
                     </View>
-                    <View style={styles.eventPosterMusicIcon}>
-                      <Text style={styles.eventPosterMusicIconText}>♫</Text>
-                    </View>
+                    {event.musicPreviewUrl ? (
+                      <Pressable
+                        style={[
+                          styles.eventPosterPreviewButton,
+                          activePreviewEventId === event.id && styles.eventPosterPreviewButtonActive
+                        ]}
+                        onPress={(pressEvent) => {
+                          pressEvent.stopPropagation();
+                          void handleMusicPreviewPress(event);
+                        }}
+                      >
+                        <Text style={styles.eventPosterPreviewButtonGlyph}>
+                          {activePreviewEventId === event.id ? "❚❚" : "▶"}
+                        </Text>
+                      </Pressable>
+                    ) : null}
                   </View>
-                  <View style={styles.eventPosterBottomFade} />
                   <View style={styles.eventPosterBottom}>
                     <Text style={[styles.eventPosterTitle, eventGridColumns === 2 && styles.eventPosterTitleCompact]} numberOfLines={2}>
                       {event.title}
@@ -477,30 +1012,51 @@ export function EventDiscoveryScreen({ navigation }: Props) {
                     </Text>
                     <View style={styles.eventPosterMetaRow}>
                       <Text style={styles.eventPosterMetaIcon}>⌖</Text>
-                      <Text style={[styles.eventPosterMetaText, eventGridColumns === 2 && styles.eventPosterMetaTextCompact]} numberOfLines={1}>
+                      <Text
+                        style={[
+                          styles.eventPosterMetaText,
+                          styles.eventPosterMetaTextCity,
+                          eventGridColumns === 2 && styles.eventPosterMetaTextCompact
+                        ]}
+                        numberOfLines={1}
+                      >
                         {event.city || "City TBD"}
                       </Text>
                       <Text style={styles.eventPosterMetaDot}>•</Text>
-                      <Text style={[styles.eventPosterMetaText, eventGridColumns === 2 && styles.eventPosterMetaTextCompact]} numberOfLines={1}>
+                      <Text
+                        style={[
+                          styles.eventPosterMetaText,
+                          styles.eventPosterMetaTextDate,
+                          eventGridColumns === 2 && styles.eventPosterMetaTextCompact
+                        ]}
+                        numberOfLines={1}
+                      >
                         {formatEventDate(event.startsAt)}
                       </Text>
                     </View>
+                    {distanceAway !== null ? <Text style={styles.distanceMeta}>{formatDistanceAway(distanceAway)}</Text> : null}
                   </View>
                 </View>
                 <View style={[styles.eventCardBody, eventGridColumns === 2 && styles.eventCardBodyCompact]}>
-                  <View style={styles.eventMetricsRow}>
-                    <View style={styles.eventMetricPrimary}>
-                      <Text style={[styles.eventMetricPrimaryText, eventGridColumns === 2 && styles.eventMetricPrimaryTextCompact]}>
-                        {goingCount} going
-                      </Text>
+                  {hasAudienceMetrics ? (
+                    <View style={styles.eventMetricsRow}>
+                      {goingCount > 0 ? (
+                        <View style={styles.eventMetricPrimary}>
+                          <Text style={[styles.eventMetricPrimaryText, eventGridColumns === 2 && styles.eventMetricPrimaryTextCompact]}>
+                            {goingCount} going
+                          </Text>
+                        </View>
+                      ) : null}
+                      {goingCount > 0 && crewCount > 0 ? <View style={styles.eventMetricDivider} /> : null}
+                      {crewCount > 0 ? (
+                        <View style={[styles.eventMetricSecondary, eventGridColumns === 2 && styles.eventMetricSecondaryCompact]}>
+                          <Text style={[styles.eventMetricSecondaryText, eventGridColumns === 2 && styles.eventMetricSecondaryTextCompact]}>
+                            {crewCount} looking for crew
+                          </Text>
+                        </View>
+                      ) : null}
                     </View>
-                    <View style={styles.eventMetricDivider} />
-                    <View style={[styles.eventMetricSecondary, eventGridColumns === 2 && styles.eventMetricSecondaryCompact]}>
-                      <Text style={[styles.eventMetricSecondaryText, eventGridColumns === 2 && styles.eventMetricSecondaryTextCompact]}>
-                        {crewCount} looking for crew
-                      </Text>
-                    </View>
-                  </View>
+                  ) : null}
 
                   <View style={[styles.eventActionRow, eventGridColumns === 2 && styles.eventActionRowCompact]}>
                     <RsvpButton
@@ -526,10 +1082,162 @@ export function EventDiscoveryScreen({ navigation }: Props) {
         })}
       </View>
 
+      {isLoadingMore ? (
+        <View style={styles.browseControls}>
+          <ActivityIndicator color={theme.colors.accent} />
+          <Text style={styles.browseHelper}>Loading more events…</Text>
+        </View>
+      ) : null}
+
       {!isLoading && rankedFilteredEvents.length === 0 ? (
-        <Text style={styles.body}>No upcoming events found for this genre yet.</Text>
+        <Text style={styles.body}>No upcoming events match this genre and location mix yet.</Text>
       ) : null}
       </ScrollView>
+
+      <Modal animationType="fade" transparent visible={showLocationFilterModal} onRequestClose={() => setShowLocationFilterModal(false)}>
+        <View style={styles.addEventModalRoot}>
+          <Pressable style={styles.addEventBackdrop} onPress={() => setShowLocationFilterModal(false)} />
+          <KeyboardAvoidingView
+            style={styles.locationKeyboardWrap}
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            keyboardVerticalOffset={Math.max(insets.bottom, 12)}
+          >
+            <View style={[styles.locationSheet, { paddingBottom: Math.max(insets.bottom + 14, 20) }]}>
+              <View style={styles.addEventSheetHeader}>
+                <View>
+                  <Text style={styles.addEventSheetTitle}>Location Filter</Text>
+                  <Text style={styles.locationSheetSubtitle}>Find events near you</Text>
+                </View>
+                <Pressable
+                  style={styles.addEventSheetClose}
+                  onPress={() => {
+                    setShowLocationFilterModal(false);
+                  }}
+                >
+                  <Text style={styles.addEventSheetCloseText}>Done</Text>
+                </Pressable>
+              </View>
+              <View style={styles.locationSheetBody}>
+                <View style={styles.locationSearchGroup}>
+                  <View style={styles.citySelectorField}>
+                    <View style={styles.citySelectorCopy}>
+                      <Text style={styles.citySelectorEyebrow}>📍 Current location</Text>
+                      <Text style={styles.citySelectorValue}>{viewerLocation ? viewerLocationLabel : "Los Angeles"}</Text>
+                      {!viewerLocation ? (
+                        <Text style={styles.citySelectorSupportingText}>Showing Los Angeles events by default</Text>
+                      ) : null}
+                    </View>
+                  </View>
+                  {!viewerLocation ? (
+                    <View style={styles.locationActionButtons}>
+                      <Pressable
+                        style={[styles.locationActionButton, styles.locationActionButtonPrimary]}
+                        onPress={() => void handleUseCurrentLocation()}
+                        disabled={isLocating}
+                      >
+                        <Text style={[styles.locationActionButtonText, styles.locationActionButtonPrimaryText]}>
+                          {isLocating ? "Detecting location..." : "Use my location"}
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        style={styles.locationActionButton}
+                        onPress={() => {
+                          const rootNav: any = navigation.getParent();
+                          rootNav?.navigate?.("Profile");
+                          setShowLocationFilterModal(false);
+                        }}
+                      >
+                        <Text style={styles.locationActionButtonText}>Set location in profile</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+                </View>
+                <View style={styles.radiusPickerSection}>
+                  <Text style={styles.locationSectionLabel}>Distance</Text>
+                  {!viewerLocation ? (
+                    <Text style={styles.distanceHelperText}>Set your location to filter by distance</Text>
+                  ) : (
+                    <SheetStep key={`distance-${viewerLocationLabel}`}>
+                      <View style={styles.distanceHeaderRow}>
+                        <Text style={styles.distanceValueText}>{selectedRadiusMiles ?? 25} mi</Text>
+                      </View>
+                      <View style={styles.distanceSliderWrap}>
+                        <Slider
+                          minimumValue={0}
+                          maximumValue={RADIUS_OPTIONS.length - 2}
+                          step={1}
+                          minimumTrackTintColor={theme.colors.accent}
+                          maximumTrackTintColor="rgba(255,255,255,0.12)"
+                          thumbTintColor={theme.colors.accent}
+                          value={Math.min(radiusSliderValue, RADIUS_OPTIONS.length - 2)}
+                          onValueChange={(value) => {
+                            const option = RADIUS_OPTIONS[Math.round(value)];
+                            if (option) {
+                              setSelectedRadiusMiles(option.value);
+                            }
+                          }}
+                        />
+                        <View style={styles.distanceSliderLabels}>
+                          {RADIUS_OPTIONS.slice(0, -1).map((option) => (
+                            <Text key={option.label} style={styles.distanceSliderLabel}>
+                              {option.label}
+                            </Text>
+                          ))}
+                        </View>
+                      </View>
+                    </SheetStep>
+                  )}
+                </View>
+                <View style={styles.locationFooterRow}>
+                  <Pressable
+                    style={styles.locationDoneButton}
+                    onPress={() => {
+                      setShowLocationFilterModal(false);
+                    }}
+                  >
+                    <Text style={styles.locationDoneButtonText}>
+                      {`${rankedFilteredEvents.length} ${rankedFilteredEvents.length === 1 ? "event" : "events"}`}
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      <Modal animationType="fade" transparent visible={isSortDropdownOpen} onRequestClose={() => setIsSortDropdownOpen(false)}>
+        <View style={styles.addEventModalRoot}>
+          <Pressable style={styles.addEventBackdrop} onPress={() => setIsSortDropdownOpen(false)} />
+          <View style={[styles.sortBottomSheet, { paddingBottom: Math.max(insets.bottom + 14, 20) }]}>
+            <View style={styles.addEventSheetHeader}>
+              <Text style={styles.addEventSheetTitle}>Sort Events</Text>
+            </View>
+            <View style={styles.sortBottomSheetList}>
+              {DISCOVER_SORT_GROUPS.map((group) => (
+                <View key={group.title} style={styles.sortBottomSheetGroup}>
+                  <Text style={styles.sortBottomSheetGroupTitle}>{group.title}</Text>
+                  {group.options.map((option) => {
+                    const active = option.key === activeSortTab;
+                    const flashing = option.key === sortSelectionFeedbackKey;
+                    return (
+                      <Pressable
+                        key={option.key}
+                        style={[styles.sortBottomSheetItem, (active || flashing) && styles.sortBottomSheetItemActive]}
+                        onPress={() => handleSelectSortOption(option.key)}
+                      >
+                        <Text style={[styles.sortBottomSheetItemText, active && styles.sortBottomSheetItemTextActive]}>
+                          {active ? `✓ ${option.label}` : option.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              ))}
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <Modal animationType="fade" transparent visible={showAddEventModal} onRequestClose={dismissAddEventModal}>
         <View style={styles.addEventModalRoot}>
@@ -821,9 +1529,30 @@ function RsvpButton(props: {
   );
 }
 
+function FlyerSurface(props: {
+  uri?: string | null;
+  imageStyle: any;
+  fallback: React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  const showImage = Boolean(props.uri);
+
+  return (
+    <>
+      {showImage ? (
+        <RemoteImage uri={props.uri} style={props.imageStyle} />
+      ) : (
+        props.fallback
+      )}
+      {props.children}
+    </>
+  );
+}
+
 function scoreEventForDiscovery(
   event: EventRecord,
-  audienceMetrics: Record<string, { goingCount: number; lookingForCrewCount: number }>
+  audienceMetrics: Record<string, { goingCount: number; lookingForCrewCount: number }>,
+  searchCenter?: { lat: number; lng: number } | null
 ) {
   const startsAt = new Date(event.startsAt);
   const now = Date.now();
@@ -835,8 +1564,12 @@ function scoreEventForDiscovery(
   const crew = metrics.lookingForCrewCount;
   const going = metrics.goingCount;
   const edmScore = computeEdmScore(event);
-  const verifiedBoost = getEventListingLabel(event) === "Verified promoter" ? 8 : 0;
+  const listingLabel = getEventListingLabel(event);
+  const verifiedBoost = listingLabel === "Verified promoter" ? 8 : 0;
+  const curatedBoost = isEventCurrentlyFeatured(event) ? 90 + (event.promotionRank ?? 0) * 3 : 0;
   const proximityBonus = Math.max(0, Math.round(30 - daysAway * 2));
+  const distance = searchCenter ? getEventDistanceMiles(event, searchCenter) : null;
+  const locationBoost = distance === null ? 0 : Math.max(0, Math.round(36 - distance / 3));
 
   return (
     (isWeekendRelevant ? 60 : 0) +
@@ -844,8 +1577,182 @@ function scoreEventForDiscovery(
     Math.round(going * 0.06) +
     edmScore * 5 +
     verifiedBoost +
-    proximityBonus
+    curatedBoost +
+    proximityBonus +
+    locationBoost
   );
+}
+
+function compareEventsForDiscoveryTab(
+  a: EventRecord,
+  b: EventRecord,
+  sortTab: DiscoverSortTab,
+  audienceMetrics: Record<string, { goingCount: number; lookingForCrewCount: number }>,
+  referenceLocation?: { lat: number; lng: number } | null
+) {
+  switch (sortTab) {
+    case "this_weekend":
+      return compareEventsThisWeekend(a, b, audienceMetrics, referenceLocation);
+    case "nearest":
+      return compareEventsNearest(a, b, audienceMetrics, referenceLocation);
+    case "most_active":
+      return compareEventsMostActive(a, b, audienceMetrics, referenceLocation);
+    case "soonest":
+      return compareEventsSoonest(a, b, audienceMetrics, referenceLocation);
+    case "top":
+    default:
+      return compareEventsTop(a, b, audienceMetrics, referenceLocation);
+  }
+}
+
+function compareEventsTop(
+  a: EventRecord,
+  b: EventRecord,
+  audienceMetrics: Record<string, { goingCount: number; lookingForCrewCount: number }>,
+  referenceLocation?: { lat: number; lng: number } | null
+) {
+  const scoreDiff =
+    scoreEventForDiscovery(b, audienceMetrics, referenceLocation) -
+    scoreEventForDiscovery(a, audienceMetrics, referenceLocation);
+  if (scoreDiff !== 0) {
+    return scoreDiff;
+  }
+
+  return compareEventStartsAt(a, b);
+}
+
+function compareEventsThisWeekend(
+  a: EventRecord,
+  b: EventRecord,
+  audienceMetrics: Record<string, { goingCount: number; lookingForCrewCount: number }>,
+  referenceLocation?: { lat: number; lng: number } | null
+) {
+  const weekendPriorityDiff = getWeekendPriority(b) - getWeekendPriority(a);
+  if (weekendPriorityDiff !== 0) {
+    return weekendPriorityDiff;
+  }
+
+  const weekendScoreDiff =
+    scoreWeekendSortEvent(b, audienceMetrics, referenceLocation) -
+    scoreWeekendSortEvent(a, audienceMetrics, referenceLocation);
+  if (weekendScoreDiff !== 0) {
+    return weekendScoreDiff;
+  }
+
+  return compareEventStartsAt(a, b);
+}
+
+function compareEventsNearest(
+  a: EventRecord,
+  b: EventRecord,
+  audienceMetrics: Record<string, { goingCount: number; lookingForCrewCount: number }>,
+  referenceLocation?: { lat: number; lng: number } | null
+) {
+  const distanceCompare = compareEventDistance(a, b, referenceLocation);
+  if (distanceCompare !== 0) {
+    return distanceCompare;
+  }
+
+  const activityDiff = scoreEventActivity(b, audienceMetrics) - scoreEventActivity(a, audienceMetrics);
+  if (activityDiff !== 0) {
+    return activityDiff;
+  }
+
+  return compareEventStartsAt(a, b);
+}
+
+function compareEventsMostActive(
+  a: EventRecord,
+  b: EventRecord,
+  audienceMetrics: Record<string, { goingCount: number; lookingForCrewCount: number }>,
+  referenceLocation?: { lat: number; lng: number } | null
+) {
+  const activityDiff = scoreEventActivity(b, audienceMetrics) - scoreEventActivity(a, audienceMetrics);
+  if (activityDiff !== 0) {
+    return activityDiff;
+  }
+
+  const scoreDiff =
+    scoreEventForDiscovery(b, audienceMetrics, referenceLocation) -
+    scoreEventForDiscovery(a, audienceMetrics, referenceLocation);
+  if (scoreDiff !== 0) {
+    return scoreDiff;
+  }
+
+  return compareEventStartsAt(a, b);
+}
+
+function compareEventsSoonest(
+  a: EventRecord,
+  b: EventRecord,
+  audienceMetrics: Record<string, { goingCount: number; lookingForCrewCount: number }>,
+  referenceLocation?: { lat: number; lng: number } | null
+) {
+  const timeCompare = compareEventStartsAt(a, b);
+  if (timeCompare !== 0) {
+    return timeCompare;
+  }
+
+  return compareEventsTop(a, b, audienceMetrics, referenceLocation);
+}
+
+function compareEventsForDiscovery(
+  a: EventRecord,
+  b: EventRecord,
+  referenceLocation?: { lat: number; lng: number } | null
+) {
+  const distanceCompare = compareEventDistance(a, b, referenceLocation);
+  if (distanceCompare !== 0) {
+    return distanceCompare;
+  }
+
+  return compareEventStartsAt(a, b);
+}
+
+function scoreEventActivity(
+  event: EventRecord,
+  audienceMetrics: Record<string, { goingCount: number; lookingForCrewCount: number }>
+) {
+  const metrics = audienceMetrics[event.id] ?? { goingCount: 0, lookingForCrewCount: 0 };
+  return metrics.goingCount + metrics.lookingForCrewCount * 5;
+}
+
+function scoreWeekendSortEvent(
+  event: EventRecord,
+  audienceMetrics: Record<string, { goingCount: number; lookingForCrewCount: number }>,
+  referenceLocation?: { lat: number; lng: number } | null
+) {
+  const startsAt = new Date(event.startsAt);
+  const eventTs = Number.isNaN(startsAt.getTime()) ? Number.MAX_SAFE_INTEGER : startsAt.getTime();
+  const now = Date.now();
+  const hoursAway = Math.max(0, (eventTs - now) / (1000 * 60 * 60));
+  const distance = referenceLocation ? getEventDistanceMiles(event, referenceLocation) : null;
+  const distanceBoost = distance === null ? 0 : Math.max(0, Math.round(18 - distance / 5));
+  return scoreEventActivity(event, audienceMetrics) * 10 + Math.max(0, Math.round(72 - hoursAway)) + distanceBoost;
+}
+
+function getWeekendPriority(event: EventRecord) {
+  const startsAt = new Date(event.startsAt);
+  if (Number.isNaN(startsAt.getTime())) {
+    return 0;
+  }
+
+  const weekendWindow = getWeekendWindow(new Date());
+  return startsAt >= weekendWindow.start && startsAt <= weekendWindow.end ? 1 : 0;
+}
+
+function compareFeaturedEvents(a: EventRecord, b: EventRecord, viewerLocation?: { lat: number; lng: number } | null) {
+  const distanceCompare = compareEventDistance(a, b, viewerLocation);
+  if (distanceCompare !== 0) {
+    return distanceCompare;
+  }
+
+  const promotionDiff = (b.promotionRank ?? 0) - (a.promotionRank ?? 0);
+  if (promotionDiff !== 0) {
+    return promotionDiff;
+  }
+
+  return compareEventStartsAt(a, b);
 }
 
 function computeEdmScore(event: EventRecord) {
@@ -855,14 +1762,18 @@ function computeEdmScore(event: EventRecord) {
 }
 
 function getEventListingLabel(event: EventRecord) {
-  if (event.sourcePrimary === "ticketmaster") return "Official listing";
-  // Deterministic split for seeded/community events.
+  if (isEventCurrentlyFeatured(event)) return "R4V3 Pick";
+  if (event.sourcePrimary === "ticketmaster" || event.sourcePrimary === "posh" || event.sourcePrimary === "dice") {
+    return "Official listing";
+  }
+  if ((event.promotionRank ?? 0) > 0 || event.curationNote) return "Curated listing";
   return hashString(`${event.id}-verified`) % 10 > 6 ? "Verified promoter" : "Community listing";
 }
 
 function getClosestWeekendEvents(
   events: EventRecord[],
-  audienceMetrics: Record<string, { goingCount: number; lookingForCrewCount: number }>
+  audienceMetrics: Record<string, { goingCount: number; lookingForCrewCount: number }>,
+  viewerLocation?: { lat: number; lng: number } | null
 ) {
   const now = new Date();
   const { start, end } = getWeekendWindow(now);
@@ -879,10 +1790,13 @@ function getClosestWeekendEvents(
       const going = metrics.goingCount;
       const daysAway = Math.max(0, (eventTime - now.getTime()) / (1000 * 60 * 60 * 24));
       const timeProximityBonus = Math.max(0, Math.round(40 - daysAway * 4));
-      const activityScore = crew * 2 + Math.round(going * 0.18) + timeProximityBonus;
+      const curatedBoost = isEventCurrentlyFeatured(event) ? 120 + (event.promotionRank ?? 0) * 4 : 0;
+      const activityScore = crew * 2 + Math.round(going * 0.18) + timeProximityBonus + curatedBoost;
       return { event, crew, eventTime, activityScore };
     })
     .sort((a, b) => {
+      const distanceCompare = compareEventDistance(a.event, b.event, viewerLocation);
+      if (distanceCompare !== 0) return distanceCompare;
       // Primary: highest "looking for crew" first.
       if (b.crew !== a.crew) return b.crew - a.crew;
       // Secondary: soonest date.
@@ -905,10 +1819,13 @@ function getClosestWeekendEvents(
       const going = metrics.goingCount;
       const daysAway = Math.max(0, (eventTime - now.getTime()) / (1000 * 60 * 60 * 24));
       const timeProximityBonus = Math.max(0, Math.round(40 - daysAway * 4));
-      const activityScore = crew * 2 + Math.round(going * 0.18) + timeProximityBonus;
+      const curatedBoost = isEventCurrentlyFeatured(event) ? 120 + (event.promotionRank ?? 0) * 4 : 0;
+      const activityScore = crew * 2 + Math.round(going * 0.18) + timeProximityBonus + curatedBoost;
       return { event, crew, eventTime, activityScore };
     })
     .sort((a, b) => {
+      const distanceCompare = compareEventDistance(a.event, b.event, viewerLocation);
+      if (distanceCompare !== 0) return distanceCompare;
       if (b.crew !== a.crew) return b.crew - a.crew;
       if (a.eventTime !== b.eventTime) return a.eventTime - b.eventTime;
       return b.activityScore - a.activityScore;
@@ -919,15 +1836,188 @@ function getClosestWeekendEvents(
 
 function getWeekendWindow(now: Date) {
   const day = now.getDay(); // Sun=0 ... Sat=6
-  const daysUntilThursday = (4 - day + 7) % 7;
+  const daysUntilThursday = day >= 4 || day === 0 ? 4 - day : (4 - day + 7) % 7;
   const start = new Date(now);
   start.setDate(now.getDate() + daysUntilThursday);
   start.setHours(0, 0, 0, 0);
 
   const end = new Date(start);
-  end.setDate(start.getDate() + 3); // Thu->Sun
+  end.setDate(start.getDate() + 2); // Thu->Sat
   end.setHours(23, 59, 59, 999);
   return { start, end };
+}
+
+const CITY_CENTERS: Record<string, { lat: number; lng: number }> = {
+  "anaheim": { lat: 33.8366, lng: -117.9143 },
+  "orange county": { lat: 33.7175, lng: -117.8311 },
+  "costa mesa": { lat: 33.6411, lng: -117.9187 },
+  "hollywood": { lat: 34.0928, lng: -118.3287 },
+  "inland empire": { lat: 34.0170, lng: -117.3664 },
+  "long beach": { lat: 33.7701, lng: -118.1937 },
+  "los angeles": { lat: 34.0522, lng: -118.2437 },
+  "ontario": { lat: 34.0633, lng: -117.6509 },
+  "pomona": { lat: 34.0551, lng: -117.749 },
+  "riverside": { lat: 33.9806, lng: -117.3755 },
+  "san bernardino": { lat: 34.1083, lng: -117.2898 },
+  "san diego": { lat: 32.7157, lng: -117.1611 },
+  "santa ana": { lat: 33.7455, lng: -117.8677 },
+  "santa barbara": { lat: 34.4208, lng: -119.6982 },
+  "temecula": { lat: 33.4936, lng: -117.1484 },
+  "ventura": { lat: 34.2746, lng: -119.229 },
+  "west hollywood": { lat: 34.0900, lng: -118.3617 }
+};
+
+const CITY_QUERY_ALIASES: Record<string, string> = {
+  "la": "los angeles",
+  "l.a.": "los angeles",
+  "dtla": "los angeles",
+  "los angeles county": "los angeles",
+  "oc": "orange county",
+  "orange county": "orange county",
+  "orange": "orange county",
+  "orange county area": "orange county",
+  "ie": "inland empire",
+  "inland empire": "inland empire",
+  "riverisde": "riverside",
+  "riverside county area": "riverside",
+  "san bernardino county": "san bernardino",
+  "riverside county": "riverside",
+  "san diego county": "san diego",
+  "sb": "san bernardino",
+  "sd": "san diego",
+  "weho": "west hollywood"
+};
+
+function getCityCenter(city: string) {
+  const normalized = normalizeCityKey(city);
+  const directKey =
+    CITY_QUERY_ALIASES[normalized] ??
+    (normalized.includes("los angeles") ? "los angeles" : null) ??
+    (normalized.includes("san diego") ? "san diego" : null) ??
+    (normalized.includes("riverside") || normalized.includes("riverisde") ? "riverside" : null);
+  const direct = CITY_CENTERS[normalized] ?? RUNTIME_CITY_CENTERS[normalized] ?? CITY_CENTERS[directKey ?? ""];
+  if (direct) {
+    return direct;
+  }
+
+  for (const [alias, target] of Object.entries(CITY_QUERY_ALIASES)) {
+    if (normalized.includes(alias)) {
+      return CITY_CENTERS[target] ?? null;
+    }
+  }
+
+  for (const [knownCity, center] of Object.entries(CITY_CENTERS)) {
+    if (normalized.includes(knownCity) || knownCity.includes(normalized)) {
+      return center;
+    }
+  }
+
+  for (const [knownCity, center] of Object.entries(RUNTIME_CITY_CENTERS)) {
+    if (normalized.includes(knownCity) || knownCity.includes(normalized)) {
+      return center;
+    }
+  }
+
+  return null;
+}
+
+function normalizeCityKey(city: string | null | undefined) {
+  return (city ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[.,]/g, "")
+    .replace(/\s+/g, " ");
+}
+
+function getEventDistanceMiles(event: EventRecord, searchCenter: { lat: number; lng: number }) {
+  const eventCity = event.city?.trim();
+  if (!eventCity) {
+    return null;
+  }
+  const eventCenter = getCityCenter(eventCity);
+  if (!eventCenter) {
+    return null;
+  }
+  return haversineMiles(searchCenter, eventCenter);
+}
+
+function compareEventDistance(
+  a: EventRecord,
+  b: EventRecord,
+  viewerLocation?: { lat: number; lng: number } | null
+) {
+  if (!viewerLocation) {
+    return 0;
+  }
+
+  const distanceA = getEventDistanceMiles(a, viewerLocation);
+  const distanceB = getEventDistanceMiles(b, viewerLocation);
+
+  if (distanceA === null && distanceB === null) return 0;
+  if (distanceA === null) return 1;
+  if (distanceB === null) return -1;
+  if (distanceA !== distanceB) return distanceA - distanceB;
+  return 0;
+}
+
+function compareEventStartsAt(a: EventRecord, b: EventRecord) {
+  const timeA = new Date(a.startsAt).getTime();
+  const timeB = new Date(b.startsAt).getTime();
+  const safeA = Number.isNaN(timeA) ? Number.MAX_SAFE_INTEGER : timeA;
+  const safeB = Number.isNaN(timeB) ? Number.MAX_SAFE_INTEGER : timeB;
+  return safeA - safeB;
+}
+
+function formatDistanceAway(distanceMiles: number) {
+  if (distanceMiles < 10) {
+    return `📍 ${distanceMiles.toFixed(1)} mi away`;
+  }
+  return `📍 ${Math.round(distanceMiles)} mi away`;
+}
+
+function formatAudienceSummary(metrics: { goingCount: number; lookingForCrewCount: number }) {
+  const parts: string[] = [];
+  if (metrics.goingCount > 0) {
+    parts.push(`${metrics.goingCount} going`);
+  }
+  if (metrics.lookingForCrewCount > 0) {
+    parts.push(`${metrics.lookingForCrewCount} looking for crew`);
+  }
+  return parts.length > 0 ? parts.join(" • ") : null;
+}
+
+function eventMatchesGenre(event: EventRecord, selectedGenre: string) {
+  const matchers = EVENT_GENRE_MATCHERS[selectedGenre];
+  if (!matchers) {
+    return (event.genreTags ?? []).some((tag) => tag.trim().toLowerCase() === selectedGenre.toLowerCase());
+  }
+
+  const normalizedTags = (event.genreTags ?? []).map((tag) => tag.trim().toLowerCase()).filter(Boolean);
+  return normalizedTags.some((tag) => matchers.some((matcher) => tag.includes(matcher)));
+}
+
+function haversineMiles(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
+  const toRad = (value: number) => (value * Math.PI) / 180;
+  const earthRadiusMiles = 3958.8;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const sinLat = Math.sin(dLat / 2);
+  const sinLng = Math.sin(dLng / 2);
+  const h = sinLat * sinLat + Math.cos(lat1) * Math.cos(lat2) * sinLng * sinLng;
+  return 2 * earthRadiusMiles * Math.asin(Math.sqrt(h));
+}
+
+function isEventCurrentlyFeatured(event: EventRecord) {
+  if (!event.isFeatured) {
+    return false;
+  }
+  if (!event.featuredUntil) {
+    return true;
+  }
+  const expiresAt = new Date(event.featuredUntil);
+  return !Number.isNaN(expiresAt.getTime()) && expiresAt.getTime() > Date.now();
 }
 
 function formatWeekendDay(startsAt: string) {
@@ -1318,6 +2408,13 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
     ...theme.type.body
   },
+  upcomingSupportText: {
+    color: "rgba(255,249,239,0.62)",
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: -4,
+    marginBottom: 6
+  },
   weekendRail: {
     gap: 10,
     paddingRight: 16
@@ -1330,6 +2427,13 @@ const styles = StyleSheet.create({
     padding: 14,
     gap: 6,
     overflow: "hidden"
+  },
+  weekendFlyerImage: {
+    ...StyleSheet.absoluteFillObject
+  },
+  weekendFlyerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(7,7,10,0.38)"
   },
   weekendGlowA: {
     position: "absolute",
@@ -1538,6 +2642,13 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 8
   },
+  sectionHeaderRowCompact: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8
+  },
   sectionTitle: {
     color: theme.colors.textPrimary,
     ...theme.type.titleMd
@@ -1549,6 +2660,334 @@ const styles = StyleSheet.create({
   genreSection: {
     gap: 8
   },
+  discoveryControlRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10
+  },
+  upcomingHeaderActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8
+  },
+  sortDropdownTrigger: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceMuted,
+    paddingHorizontal: 12,
+    paddingVertical: 8
+  },
+  sortDropdownTriggerText: {
+    color: theme.colors.textPrimary,
+    ...theme.type.caption,
+    fontWeight: "700"
+  },
+  sortDropdownTriggerGlyph: {
+    color: theme.colors.textSecondary,
+    fontSize: 12,
+    fontWeight: "800"
+  },
+  sortBottomSheet: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "#14110D",
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    gap: 10
+  },
+  sortBottomSheetList: {
+    gap: 10
+  },
+  sortBottomSheetGroup: {
+    gap: 5
+  },
+  sortBottomSheetGroupTitle: {
+    color: "rgba(255,245,237,0.44)",
+    fontSize: 10,
+    lineHeight: 13,
+    fontWeight: "800",
+    letterSpacing: 1.35
+  },
+  sortBottomSheetItem: {
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12
+  },
+  sortBottomSheetItemActive: {
+    backgroundColor: "rgba(211,92,51,0.14)"
+  },
+  sortBottomSheetItemText: {
+    color: "rgba(255,245,237,0.86)",
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "600"
+  },
+  sortBottomSheetItemTextActive: {
+    color: "#FFF8EE",
+    fontWeight: "800"
+  },
+  locationTrigger: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    maxWidth: 132,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.045)",
+    paddingHorizontal: 10,
+    paddingVertical: 7
+  },
+  locationTriggerGlyphText: {
+    color: "rgba(255,232,182,0.92)",
+    fontSize: 14,
+    fontWeight: "800"
+  },
+  locationTriggerValue: {
+    flex: 1,
+    color: "rgba(255,248,238,0.9)",
+    fontSize: 12,
+    lineHeight: 15,
+    fontWeight: "700"
+  },
+  locationSheet: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "#14110D",
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    gap: 14
+  },
+  locationSheetSubtitle: {
+    color: "rgba(255,249,239,0.7)",
+    ...theme.type.caption
+  },
+  locationSheetBody: {
+    gap: 12
+  },
+  locationKeyboardWrap: {
+    justifyContent: "flex-end"
+  },
+  locationSearchGroup: {
+    gap: 8
+  },
+  locationSectionLabel: {
+    color: "rgba(255,249,239,0.68)",
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.5
+  },
+  citySelectorField: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(255,255,255,0.03)",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12
+  },
+  citySelectorCopy: {
+    flex: 1,
+    gap: 4
+  },
+  citySelectorEyebrow: {
+    color: "rgba(255,249,239,0.52)",
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.4
+  },
+  citySelectorValue: {
+    color: "#FFF8EE",
+    fontSize: 15,
+    lineHeight: 19,
+    fontWeight: "800"
+  },
+  citySelectorSupportingText: {
+    color: "rgba(255,249,239,0.58)",
+    fontSize: 12,
+    lineHeight: 16
+  },
+  locationActionButtons: {
+    flexDirection: "row",
+    gap: 10
+  },
+  locationActionButton: {
+    flex: 1,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.07)",
+    backgroundColor: "rgba(255,255,255,0.015)",
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  locationActionButtonPrimary: {
+    borderColor: "rgba(211,92,51,0.46)",
+    backgroundColor: "rgba(211,92,51,0.22)"
+  },
+  locationActionButtonText: {
+    color: "rgba(255,248,238,0.78)",
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "700",
+    textAlign: "center"
+  },
+  locationActionButtonPrimaryText: {
+    color: "#FFF4EC"
+  },
+  radiusPickerSection: {
+    gap: 6,
+    paddingTop: 2,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "rgba(255,255,255,0.08)"
+  },
+  distanceHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12
+  },
+  distanceValueText: {
+    color: "#FFF8EE",
+    fontSize: 13,
+    lineHeight: 16,
+    fontWeight: "700"
+  },
+  distanceSliderWrap: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(255,255,255,0.03)",
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 10,
+    gap: 10
+  },
+  distanceSliderWrapDisabled: {
+    opacity: 0.45
+  },
+  distanceSliderLabels: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 8
+  },
+  distanceSliderLabel: {
+    color: "rgba(255,249,239,0.54)",
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: "600"
+  },
+  distanceHelperText: {
+    color: "rgba(255,249,239,0.52)",
+    fontSize: 12,
+    lineHeight: 16
+  },
+  locationFooterRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12
+  },
+  locationDoneButton: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(211,92,51,0.4)",
+    backgroundColor: "rgba(211,92,51,0.18)",
+    paddingHorizontal: 14,
+    paddingVertical: 11
+  },
+  locationDoneButtonText: {
+    color: "#FFF4EC",
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "800"
+  },
+  featuredSection: {
+    gap: 10,
+    marginBottom: 8
+  },
+  featuredRail: {
+    gap: 12,
+    paddingRight: 16
+  },
+  featuredCard: {
+    width: 228,
+    height: 292,
+    borderRadius: 22,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "#12100D"
+  },
+  featuredImage: {
+    ...StyleSheet.absoluteFillObject
+  },
+  featuredImageFallback: {
+    ...StyleSheet.absoluteFillObject
+  },
+  featuredOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(5,5,6,0.28)"
+  },
+  featuredBody: {
+    flex: 1,
+    justifyContent: "flex-end",
+    padding: 14,
+    gap: 6
+  },
+  featuredPill: {
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+    backgroundColor: "rgba(17,15,12,0.62)",
+    paddingHorizontal: 10,
+    paddingVertical: 5
+  },
+  featuredPillText: {
+    color: "#F4C56A",
+    fontSize: 10,
+    letterSpacing: 0.8,
+    fontWeight: "800"
+  },
+  featuredTitle: {
+    color: "#FFF8EE",
+    fontSize: 22,
+    lineHeight: 26,
+    fontWeight: "800"
+  },
+  featuredMeta: {
+    color: "rgba(255,249,239,0.86)",
+    ...theme.type.body,
+    fontWeight: "700"
+  },
+  featuredSubmeta: {
+    color: "rgba(255,249,239,0.72)",
+    ...theme.type.caption,
+    fontWeight: "700"
+  },
+  distanceMeta: {
+    color: "#F4D08A",
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "700"
+  },
   genreRail: {
     gap: 8,
     paddingRight: 8
@@ -1556,6 +2995,32 @@ const styles = StyleSheet.create({
   error: {
     color: "#FF9F9F",
     fontWeight: "600"
+  },
+  errorInlineCard: {
+    marginTop: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255,159,159,0.28)",
+    backgroundColor: "rgba(90,24,24,0.24)",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12
+  },
+  errorInlineButton: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+    backgroundColor: "rgba(255,255,255,0.04)",
+    paddingHorizontal: 10,
+    paddingVertical: 6
+  },
+  errorInlineButtonText: {
+    color: "#FFF8EE",
+    fontSize: 12,
+    fontWeight: "800"
   },
   genreChip: {
     borderRadius: 999,
@@ -1590,6 +3055,31 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "flex-start"
   },
+  browseControls: {
+    alignItems: "center",
+    gap: 8,
+    marginTop: 4,
+    marginBottom: 8
+  },
+  browseButton: {
+    minHeight: 46,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: theme.colors.accent,
+    backgroundColor: theme.colors.accentSoft,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 18,
+    paddingVertical: 12
+  },
+  browseButtonText: {
+    color: theme.colors.textPrimary,
+    fontWeight: "800"
+  },
+  browseHelper: {
+    color: theme.colors.textSecondary,
+    ...theme.type.caption
+  },
   eventCardShell: {
     gap: 0
   },
@@ -1611,6 +3101,21 @@ const styles = StyleSheet.create({
     padding: 14,
     justifyContent: "space-between",
     overflow: "hidden"
+  },
+  eventPosterFlyerImage: {
+    ...StyleSheet.absoluteFillObject
+  },
+  eventPosterFlyerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(8,10,16,0.26)"
+  },
+  eventPosterBottomScrim: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 118,
+    backgroundColor: "rgba(4,6,10,0.54)"
   },
   eventPosterGrid: {
     position: "absolute",
@@ -1684,49 +3189,52 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 0.7
   },
-  eventPosterMusicIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+  eventPosterPreviewButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.16)",
-    backgroundColor: "rgba(6,7,10,0.50)",
+    borderColor: "rgba(255,255,255,0.18)",
+    backgroundColor: "rgba(6,7,10,0.28)",
     alignItems: "center",
     justifyContent: "center"
   },
-  eventPosterMusicIconText: {
-    color: "#FFF8EE",
-    fontSize: 16,
-    fontWeight: "700"
+  eventPosterPreviewButtonActive: {
+    borderColor: "rgba(135,219,255,0.45)",
+    backgroundColor: "rgba(12,44,66,0.42)"
   },
-  eventPosterBottomFade: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: 92,
-    backgroundColor: "rgba(8,9,12,0.62)"
+  eventPosterPreviewButtonGlyph: {
+    color: "#FFF8EE",
+    fontSize: 12,
+    fontWeight: "800",
+    marginLeft: 1
   },
   eventPosterBottom: {
     gap: 4
   },
   eventPosterTitle: {
-    color: "#FFF8EE",
+    color: "#FFFDF8",
     fontSize: 22,
     lineHeight: 26,
-    fontWeight: "800"
+    fontWeight: "900",
+    textShadowColor: "rgba(0,0,0,0.52)",
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 6
   },
   eventPosterTitleCompact: {
     fontSize: 14,
     lineHeight: 17
   },
   eventListingLabel: {
-    color: "rgba(255,232,198,0.82)",
+    color: "rgba(255,241,219,0.9)",
     fontSize: 10,
     fontWeight: "700",
     letterSpacing: 0.4,
     textTransform: "uppercase",
-    marginTop: 1
+    marginTop: 1,
+    textShadowColor: "rgba(0,0,0,0.42)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4
   },
   eventPosterMetaRow: {
     flexDirection: "row",
@@ -1738,10 +3246,20 @@ const styles = StyleSheet.create({
     fontSize: 14
   },
   eventPosterMetaText: {
-    color: "rgba(255,249,239,0.86)",
+    color: "rgba(255,250,243,0.94)",
     fontSize: 13,
     fontWeight: "600",
-    flexShrink: 1
+    flexShrink: 1,
+    textShadowColor: "rgba(0,0,0,0.44)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4
+  },
+  eventPosterMetaTextCity: {
+    flex: 1,
+    minWidth: 0
+  },
+  eventPosterMetaTextDate: {
+    flexShrink: 0
   },
   eventPosterMetaTextCompact: {
     fontSize: 10

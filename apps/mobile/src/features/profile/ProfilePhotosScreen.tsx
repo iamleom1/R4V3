@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import * as ImagePicker from "expo-image-picker";
 import * as ImageManipulator from "expo-image-manipulator";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppState } from "../../app/AppProvider";
+import { RemoteImage } from "../../components/RemoteImage";
 import { theme } from "../../theme";
 import {
   deleteProfilePhoto,
@@ -89,10 +90,21 @@ export function ProfilePhotosScreen(_: Props) {
     });
     setIsUploadingSlot(null);
     if (!upload.ok) {
+      setLocalPreviewUris((prev) => {
+        const next = { ...prev };
+        delete next[slot];
+        return next;
+      });
       Alert.alert("Upload failed", upload.error);
       return;
     }
-    await refreshPhotos();
+    setPhotoSlots((prev) => prev.map((value, index) => (index === slot ? upload.photo : value)));
+    setLocalPreviewUris((prev) => {
+      const next = { ...prev };
+      delete next[slot];
+      return next;
+    });
+    void refreshPhotos();
   }
 
   async function handleDelete(slot: number) {
@@ -137,9 +149,10 @@ export function ProfilePhotosScreen(_: Props) {
                 const localPreview = localPreviewUris[index];
                 const imageUri = localPreview || photo?.url || "";
                 return imageUri ? (
-                  <Image
-                    source={{ uri: imageUri }}
+                  <RemoteImage
+                    uri={imageUri}
                     style={styles.photoImage}
+                    transition={0}
                   />
                 ) : null;
               })()}

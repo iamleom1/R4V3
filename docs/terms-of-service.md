@@ -1,6 +1,6 @@
 # Terms of Service
 
-Last updated: March 17, 2026
+Last updated: April 16, 2026
 
 ## Acceptance
 
@@ -33,4 +33,4 @@ We may suspend or terminate accounts for policy violations, abuse, fraud, or saf
 
 ## Contact
 
-Support contact: replace-with-your-support-email@example.com
+Support contact is provided through the app support channel or public support page listed with the product release.

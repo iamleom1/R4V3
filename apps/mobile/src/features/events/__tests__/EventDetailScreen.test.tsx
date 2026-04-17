@@ -1,0 +1,155 @@
+import React from "react";
+import { fireEvent, render, waitFor } from "@testing-library/react-native";
+
+import { EventDetailScreen } from "../EventDetailScreen";
+import { createTestAppState } from "../../../test/testAppState";
+import type { EventRecord } from "../../../types/domain";
+
+const mockUseAppState = jest.fn();
+const mockUseSafeAreaInsets = jest.fn();
+const mockSetRsvp = jest.fn();
+const mockRefreshRsvps = jest.fn();
+const mockSetLooking = jest.fn();
+const mockListEventAudienceMetrics = jest.fn();
+const mockListEventCrewRooms = jest.fn();
+const mockHasEventCrewChat = jest.fn();
+const mockJoinEventCrewRoom = jest.fn();
+const mockStartEventCrewThreadSeed = jest.fn();
+let mockRsvpMap: Record<string, "going" | "none"> = { "event-1": "none" };
+let mockVisibilityMap: Record<string, boolean> = { "event-1": false };
+
+jest.mock("../../../app/AppProvider", () => ({
+  useAppState: () => mockUseAppState()
+}));
+
+jest.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => mockUseSafeAreaInsets()
+}));
+
+jest.mock("../../../components/RemoteImage", () => ({
+  RemoteImage: () => null
+}));
+
+jest.mock("../musicPreview", () => ({
+  openMusicPreview: jest.fn(async () => {})
+}));
+
+jest.mock("../useEventRsvpState", () => ({
+  useEventRsvpState: () => ({
+    rsvps: mockRsvpMap,
+    setRsvp: mockSetRsvp,
+    refreshRsvps: mockRefreshRsvps
+  })
+}));
+
+jest.mock("../useCrewVisibilityState", () => ({
+  useCrewVisibilityState: () => ({
+    visibility: mockVisibilityMap,
+    setLooking: mockSetLooking
+  })
+}));
+
+jest.mock("../eventRepository", () => ({
+  hasEventCrewChat: (...args: unknown[]) => mockHasEventCrewChat(...args),
+  joinEventCrewRoom: (...args: unknown[]) => mockJoinEventCrewRoom(...args),
+  listEventAudienceMetrics: (...args: unknown[]) => mockListEventAudienceMetrics(...args),
+  listEventCrewRooms: (...args: unknown[]) => mockListEventCrewRooms(...args),
+  startEventCrewThreadSeed: (...args: unknown[]) => mockStartEventCrewThreadSeed(...args)
+}));
+
+const event: EventRecord = {
+  id: "event-1",
+  title: "Warehouse Pulse",
+  venueName: "District 9",
+  city: "Los Angeles",
+  startsAt: "2026-05-01T03:00:00.000Z",
+  endsAt: null,
+  genreTags: ["House"],
+  sourcePrimary: "manual",
+  isFeatured: true,
+  promotionRank: 10,
+  featuredUntil: null,
+  curationNote: null,
+  flyerUrl: null
+};
+
+describe("EventDetailScreen", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseAppState.mockReturnValue(
+      createTestAppState({
+        authStatus: "authenticated",
+        session: { user: { id: "user-1", email: "test@example.com" } } as any
+      })
+    );
+    mockUseSafeAreaInsets.mockReturnValue({ top: 0, bottom: 0, left: 0, right: 0 });
+    mockRsvpMap = { "event-1": "none" };
+    mockVisibilityMap = { "event-1": false };
+    mockSetRsvp.mockResolvedValue({ ok: true });
+    mockRefreshRsvps.mockResolvedValue({});
+    mockSetLooking.mockResolvedValue({ ok: true });
+    mockListEventAudienceMetrics
+      .mockResolvedValueOnce({ "event-1": { goingCount: 4, lookingForCrewCount: 1 } })
+      .mockResolvedValue({ "event-1": { goingCount: 5, lookingForCrewCount: 2 } });
+    mockListEventCrewRooms.mockResolvedValue([]);
+    mockHasEventCrewChat.mockResolvedValue(false);
+    mockJoinEventCrewRoom.mockResolvedValue({ ok: true });
+    mockStartEventCrewThreadSeed.mockResolvedValue({ ok: true, roomId: "room-1", title: "Main Crew" });
+  });
+
+  it("writes RSVP changes for a signed-in user", async () => {
+    const navigation = {
+      navigate: jest.fn(),
+      goBack: jest.fn(),
+      canGoBack: () => true,
+      getParent: () => null
+    } as any;
+
+    const screen = render(
+      <EventDetailScreen
+        navigation={navigation}
+        route={{ key: "EventDetail", name: "EventDetail", params: { event } } as any}
+      />
+    );
+
+    await waitFor(() => {
+      expect(mockListEventAudienceMetrics).toHaveBeenCalledWith(["event-1"]);
+      expect(mockListEventCrewRooms).toHaveBeenCalledWith("event-1", "user-1");
+      expect(screen.getByText("I'm Going")).toBeOnTheScreen();
+    });
+
+    fireEvent.press(screen.getByText("I'm Going"));
+
+    await waitFor(() => {
+      expect(mockSetRsvp).toHaveBeenCalledWith("event-1", "going");
+    });
+  });
+
+  it("writes crew visibility changes when the user is already going", async () => {
+    mockRsvpMap = { "event-1": "going" };
+    const navigation = {
+      navigate: jest.fn(),
+      goBack: jest.fn(),
+      canGoBack: () => true,
+      getParent: () => null
+    } as any;
+
+    const screen = render(
+      <EventDetailScreen
+        navigation={navigation}
+        route={{ key: "EventDetail", name: "EventDetail", params: { event } } as any}
+      />
+    );
+
+    await waitFor(() => {
+      expect(mockListEventCrewRooms).toHaveBeenCalledWith("event-1", "user-1");
+      expect(screen.getByText("Leave Event")).toBeOnTheScreen();
+    });
+
+    fireEvent.press(screen.getAllByText("Looking for Crew")[1]);
+
+    await waitFor(() => {
+      expect(mockSetLooking).toHaveBeenCalledWith("event-1", true);
+    });
+  });
+});

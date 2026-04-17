@@ -1,23 +1,17 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFocusEffect } from "@react-navigation/native";
-import { ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, AppState, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { ScrollView } from "react-native-gesture-handler";
 import { useAppState } from "../../app/AppProvider";
+import { RemoteImage } from "../../components/RemoteImage";
+import { getSupabaseClient } from "../../lib/supabase";
+import { toUserFacingError } from "../../lib/userFacingErrors";
 import { theme } from "../../theme";
 import type { MessagesStackParamList } from "./MessagesNavigator";
-import { listConversations, type ConversationListItem } from "./messagesRepository";
+import { hideConversation, listConversations, listCrewGroups, type ConversationListItem, type CrewGroupListItem, unmatchConversation } from "./messagesRepository";
 
 type Props = NativeStackScreenProps<MessagesStackParamList, "MessagesHome">;
-
-type CrewRoomItem = {
-  id: string;
-  eventName: string;
-  crewSize: number;
-  active: boolean;
-  latestAt: string;
-  lookingCount: number;
-  representativeConversation: ConversationListItem;
-};
 
 const demoConversations: ConversationListItem[] = [
   {
@@ -55,9 +49,11 @@ const demoConversations: ConversationListItem[] = [
 export function MessagesScreen({ navigation }: Props) {
   const { session } = useAppState();
   const [items, setItems] = useState<ConversationListItem[]>([]);
+  const [groupItems, setGroupItems] = useState<CrewGroupListItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [deletingMatchIds, setDeletingMatchIds] = useState<string[]>([]);
 
   const hasRealSession = Boolean(session?.user?.id);
   const visibleItems = useMemo(
@@ -70,33 +66,8 @@ export function MessagesScreen({ navigation }: Props) {
   }, [visibleItems, session?.user?.id]);
   const matchBubbleItems = useMemo(() => visibleItems.slice(0, 8), [visibleItems]);
   const hasConversations = visibleItems.length > 0;
-  const crewRooms = useMemo<CrewRoomItem[]>(() => {
-    const byEvent = new Map<string, ConversationListItem[]>();
-    for (const item of visibleItems) {
-      if (!item.eventName?.trim()) continue;
-      const key = item.eventName.trim();
-      const existing = byEvent.get(key) ?? [];
-      existing.push(item);
-      byEvent.set(key, existing);
-    }
-    return Array.from(byEvent.entries())
-      .map(([eventName, rows], idx) => {
-        const latest = rows
-          .map((row) => row.lastMessageAt ?? row.matchedAt)
-          .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] ?? new Date().toISOString();
-        const active = Date.now() - new Date(latest).getTime() < 1000 * 60 * 60 * 12;
-        return {
-          id: `crew-room-${eventName}-${idx}`,
-          eventName,
-          crewSize: Math.max(2, Math.min(8, rows.length + 1)),
-          active,
-          latestAt: latest,
-          lookingCount: Math.max(1, rows.length),
-          representativeConversation: rows[0]
-        };
-      })
-      .sort((a, b) => new Date(b.latestAt).getTime() - new Date(a.latestAt).getTime());
-  }, [visibleItems]);
+  const hasCrewGroups = groupItems.length > 0;
+  const isChatEmpty = !hasConversations && !hasCrewGroups;
 
   function openConversation(item: ConversationListItem) {
     if (!session?.user?.id) {
@@ -122,27 +93,88 @@ export function MessagesScreen({ navigation }: Props) {
     });
   }
 
-  async function load(opts?: { refresh?: boolean }) {
+  function openConversationActions(item: ConversationListItem) {
+    if (!session?.user?.id) {
+      Alert.alert("Sign in required", "Sign in to manage chats.");
+      return;
+    }
+
+    Alert.alert("Chat options", `Manage your conversation with ${item.otherDisplayName}.`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Delete chat", onPress: () => void handleDeleteConversation(item) },
+      { text: "Unmatch", style: "destructive", onPress: () => void handleUnmatchConversation(item) }
+    ]);
+  }
+
+  async function handleDeleteConversation(item: ConversationListItem) {
+    if (!session?.user?.id) {
+      return;
+    }
+
+    setDeletingMatchIds((prev) => (prev.includes(item.matchId) ? prev : [...prev, item.matchId]));
+    const result = await hideConversation(item.matchId);
+    setDeletingMatchIds((prev) => prev.filter((id) => id !== item.matchId));
+
+    if (!result.ok) {
+      Alert.alert("Delete failed", result.error);
+      return;
+    }
+
+    setItems((prev) => prev.filter((row) => row.matchId !== item.matchId));
+  }
+
+  async function handleUnmatchConversation(item: ConversationListItem) {
+    if (!session?.user?.id) {
+      return;
+    }
+
+    setDeletingMatchIds((prev) => (prev.includes(item.matchId) ? prev : [...prev, item.matchId]));
+    const result = await unmatchConversation(item.matchId);
+    setDeletingMatchIds((prev) => prev.filter((id) => id !== item.matchId));
+
+    if (!result.ok) {
+      Alert.alert("Unmatch failed", result.error);
+      return;
+    }
+
+    setItems((prev) => prev.filter((row) => row.matchId !== item.matchId));
+  }
+
+  async function load(opts?: { refresh?: boolean; silent?: boolean }) {
     const refresh = opts?.refresh ?? false;
+    const silent = opts?.silent ?? false;
     if (refresh) {
-      setIsRefreshing(true);
+      if (!silent) {
+        setIsRefreshing(true);
+      }
     } else {
       setIsLoading(true);
     }
-    setError(null);
+    if (!silent) {
+      setError(null);
+    }
 
     try {
       if (!session?.user?.id) {
         setItems([]);
+        setGroupItems([]);
         return;
       }
-      const rows = await listConversations(session.user.id);
+      const [rows, crewGroups] = await Promise.all([
+        listConversations(session.user.id),
+        listCrewGroups(session.user.id)
+      ]);
       setItems(rows);
+      setGroupItems(crewGroups);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load conversations.");
+      if (!silent) {
+        setError(toUserFacingError(e, "Failed to load conversations."));
+      }
     } finally {
       setIsLoading(false);
-      setIsRefreshing(false);
+      if (!silent) {
+        setIsRefreshing(false);
+      }
     }
   }
 
@@ -157,16 +189,105 @@ export function MessagesScreen({ navigation }: Props) {
     }, [session?.user?.id])
   );
 
+  useEffect(() => {
+    if (!session?.user?.id) {
+      return;
+    }
+
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      return;
+    }
+
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleRefresh = () => {
+      if (refreshTimer) {
+        clearTimeout(refreshTimer);
+      }
+      refreshTimer = setTimeout(() => {
+        void load({ refresh: true });
+      }, 180);
+    };
+
+    const channel = supabase
+      .channel(`messages-home:${session.user.id}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, scheduleRefresh)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "crew_group_messages" }, scheduleRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "crew_groups" }, scheduleRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "crew_group_members" }, scheduleRefresh)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "message_read_states" }, scheduleRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "conversation_hidden_states" }, scheduleRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "blocks" }, scheduleRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "matches" }, scheduleRefresh)
+      .subscribe();
+
+    return () => {
+      if (refreshTimer) {
+        clearTimeout(refreshTimer);
+      }
+      void supabase.removeChannel(channel);
+    };
+  }, [session?.user?.id]);
+
+  useEffect(() => {
+    if (!session?.user?.id) {
+      return;
+    }
+
+    let appState = AppState.currentState;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+
+    const startPolling = () => {
+      if (intervalId) {
+        return;
+      }
+      intervalId = setInterval(() => {
+        if (appState !== "active") {
+          return;
+        }
+        void load({ refresh: true, silent: true });
+      }, 5000);
+    };
+
+    const stopPolling = () => {
+      if (!intervalId) {
+        return;
+      }
+      clearInterval(intervalId);
+      intervalId = null;
+    };
+
+    startPolling();
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      appState = nextState;
+      if (nextState === "active") {
+        void load({ refresh: true, silent: true });
+        startPolling();
+        return;
+      }
+      stopPolling();
+    });
+
+    return () => {
+      stopPolling();
+      subscription.remove();
+    };
+  }, [session?.user?.id]);
+
   return (
     <ScrollView
       style={styles.scroll}
       contentContainerStyle={[styles.container, { paddingTop: 12 }]}
+      alwaysBounceVertical
+      bounces
+      overScrollMode="always"
       refreshControl={
         <RefreshControl
           refreshing={isRefreshing}
           onRefresh={() => void load({ refresh: true })}
           tintColor={theme.colors.accent}
           progressBackgroundColor="#1A1712"
+          progressViewOffset={12}
         />
       }
     >
@@ -178,6 +299,13 @@ export function MessagesScreen({ navigation }: Props) {
           </Pressable>
         ) : null}
       </View>
+
+      {session?.user?.id ? (
+        <View style={[styles.refreshHintRow, isChatEmpty && styles.refreshHintRowEmpty]}>
+          <Text style={styles.refreshHintIcon}>↓</Text>
+          <Text style={styles.refreshHintText}>Pull down to refresh chats</Text>
+        </View>
+      ) : null}
 
       {!session?.user?.id ? (
         <View style={styles.authNoticeStrip}>
@@ -215,8 +343,14 @@ export function MessagesScreen({ navigation }: Props) {
                   onPress={() => openConversation(item)}
                 >
                   <View style={[styles.matchBubbleFrame, getAvatarPalette(item, idx)]}>
-                    <View style={styles.artGlow} />
-                    <Text style={styles.matchBubbleInitials}>{initials(item.otherDisplayName)}</Text>
+                    {item.otherProfilePhotoUrl ? (
+                      <RemoteImage uri={item.otherProfilePhotoUrl} style={styles.matchBubblePhoto} />
+                    ) : (
+                      <>
+                        <View style={styles.artGlow} />
+                        <Text style={styles.matchBubbleInitials}>{initials(item.otherDisplayName)}</Text>
+                      </>
+                    )}
                     {unread ? <View style={styles.matchBubbleUnreadDot} /> : null}
                   </View>
                   <Text style={styles.matchBubbleName} numberOfLines={1}>{item.otherDisplayName}</Text>
@@ -228,53 +362,70 @@ export function MessagesScreen({ navigation }: Props) {
         )}
       </View>
 
+      {isChatEmpty && !isLoading && session?.user?.id ? (
+        <View style={styles.emptyHero}>
+          <View style={styles.emptyHeroTopRow}>
+            <Text style={styles.emptyHeroEyebrow}>Inbox</Text>
+            <Text style={styles.emptyHeroMeta}>Live refresh on</Text>
+          </View>
+          <Text style={styles.emptyHeroTitle}>Your chat space is clear right now.</Text>
+          <Text style={styles.emptyHeroBody}>
+            New matches, direct messages, and crew chats will land here. Pull down anytime to check for fresh activity.
+          </Text>
+        </View>
+      ) : null}
+
       <View style={styles.sectionDivider} />
 
       <View style={styles.matchesSection}>
         <View style={styles.sectionHeaderRow}>
-          <Text style={styles.sectionTitle}>Event Crew Chats</Text>
-          <Text style={styles.newMatchesMeta}>{crewRooms.length} rooms</Text>
+          <Text style={styles.sectionTitle}>Group Chats</Text>
+          <Text style={styles.newMatchesMeta}>{groupItems.length} groups</Text>
         </View>
 
-        {crewRooms.length === 0 ? (
-          <View style={styles.systemRow}>
-            <Text style={styles.systemRowText}>No active crew chats.</Text>
-          </View>
-        ) : (
-          <View style={styles.crewRoomList}>
-            {crewRooms.map((room, idx) => (
+        {hasCrewGroups ? (
+          <View style={styles.list}>
+            {groupItems.map((group, idx) => (
               <Pressable
-                key={room.id}
-                style={[styles.crewRoomCard, idx === 0 && styles.crewRoomCardFirst]}
-                onPress={() => openConversation(room.representativeConversation)}
+                key={group.id}
+                onPress={() => navigation.navigate("GroupChat", { groupId: group.id, title: group.title })}
+                style={[styles.item, idx === 0 && styles.itemFirst]}
               >
-                <View style={[styles.crewRoomArt, getAvatarPalette(room.representativeConversation, idx)]}>
+                <View style={[styles.art, { backgroundColor: "#221B14", borderColor: "#FF9A54" }]}>
                   <View style={styles.artGlow} />
-                  <Text style={styles.crewRoomArtText}>{initials(room.eventName)}</Text>
+                  <Text style={styles.artText}>GC</Text>
                 </View>
-                <View style={styles.crewRoomBody}>
-                  <View style={styles.crewRoomTopRow}>
-                    <Text style={styles.crewRoomTitle} numberOfLines={1}>{room.eventName}</Text>
-                    <View style={[styles.crewRoomStatusPill, room.active && styles.crewRoomStatusPillActive]}>
-                      <View style={[styles.crewRoomStatusDot, room.active && styles.crewRoomStatusDotActive]} />
-                      <Text style={[styles.crewRoomStatusText, room.active && styles.crewRoomStatusTextActive]}>
-                        {room.active ? "Active" : "Quiet"}
-                      </Text>
+                <View style={styles.itemBody}>
+                  <View style={styles.itemHeader}>
+                    <View style={styles.itemNameRow}>
+                      <Text style={styles.itemName} numberOfLines={1}>{group.title}</Text>
                     </View>
+                    <Text style={styles.itemTime}>{formatRelative(group.lastMessageAt ?? group.createdAt)}</Text>
                   </View>
-                  <View style={styles.crewRoomMetaRow}>
-                    <Text style={styles.crewRoomMetaText}>{room.crewSize} in crew</Text>
-                    <Text style={styles.crewRoomMetaDot}>•</Text>
-                    <Text style={styles.crewRoomMetaText}>{room.lookingCount} looking</Text>
-                  </View>
+                  <Text style={styles.itemPreview} numberOfLines={1}>
+                    {group.lastMessageBody ?? `${group.memberCount} members in this crew`}
+                  </Text>
                 </View>
               </Pressable>
             ))}
           </View>
+        ) : (
+          <View style={styles.systemRow}>
+            <Text style={styles.systemRowText}>No group chats yet.</Text>
+            <Text style={styles.systemRowSubtext}>Group chats will appear here after you create one with other users.</Text>
+          </View>
         )}
       </View>
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+      {error ? (
+        <View style={styles.errorCard}>
+          <Text style={styles.errorTitle}>Chat unavailable</Text>
+          <Text style={styles.error}>{error}</Text>
+          <Pressable style={styles.retryButton} onPress={() => void load({ refresh: true })}>
+            <Text style={styles.retryButtonText}>Try again</Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       {isLoading ? (
         <View style={styles.loadingRow}>
@@ -296,29 +447,49 @@ export function MessagesScreen({ navigation }: Props) {
             {visibleItems.map((item, idx) => {
               const viewerId = session?.user?.id ?? "me";
               const unread = item.isUnread && item.lastMessageSenderProfileId !== viewerId;
+              const isDeleting = deletingMatchIds.includes(item.matchId);
               return (
-                <Pressable
+                <View
                   key={item.matchId}
-                  onPress={() => openConversation(item)}
-                  style={[styles.item, idx === 0 && styles.itemFirst, unread && styles.itemUnread]}
+                  style={styles.chatRowShell}
                 >
-                  <View style={[styles.art, getAvatarPalette(item, idx)]}>
-                    <View style={styles.artGlow} />
-                    <Text style={styles.artText}>{initials(item.otherDisplayName)}</Text>
-                    {unread ? <View style={styles.artUnreadDot} /> : null}
-                  </View>
-                  <View style={styles.itemBody}>
-                    <View style={styles.itemHeader}>
-                      <View style={styles.itemNameRow}>
-                        <Text style={styles.itemName} numberOfLines={1}>{item.otherDisplayName}</Text>
-                      </View>
-                      <Text style={styles.itemTime}>{formatRelative(item.lastMessageAt ?? item.matchedAt)}</Text>
+                  <Pressable
+                    onPress={() => openConversation(item)}
+                    disabled={isDeleting}
+                    style={[styles.item, idx === 0 && styles.itemFirst, unread && styles.itemUnread, isDeleting && styles.itemDisabled]}
+                  >
+                    <View style={[styles.art, getAvatarPalette(item, idx)]}>
+                      {item.otherProfilePhotoUrl ? (
+                        <RemoteImage uri={item.otherProfilePhotoUrl} style={styles.chatAvatarPhoto} />
+                      ) : (
+                        <>
+                          <View style={styles.artGlow} />
+                          <Text style={styles.artText}>{initials(item.otherDisplayName)}</Text>
+                        </>
+                      )}
+                      {unread ? <View style={styles.artUnreadDot} /> : null}
                     </View>
-                    <Text style={[styles.itemPreview, unread && styles.itemPreviewUnread]} numberOfLines={1}>
-                      {item.lastMessageBody ?? "You matched. Start the conversation."}
-                    </Text>
-                  </View>
-                </Pressable>
+                    <View style={styles.itemBody}>
+                      <View style={styles.itemHeader}>
+                        <View style={styles.itemNameRow}>
+                          <Text style={styles.itemName} numberOfLines={1}>{item.otherDisplayName}</Text>
+                        </View>
+                        <Text style={styles.itemTime}>{formatRelative(item.lastMessageAt ?? item.matchedAt)}</Text>
+                      </View>
+                      <Text style={[styles.itemPreview, unread && styles.itemPreviewUnread]} numberOfLines={1}>
+                        {isDeleting ? "Deleting chat..." : item.lastMessageBody ?? "You matched. Start the conversation."}
+                      </Text>
+                    </View>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => openConversationActions(item)}
+                    disabled={!session?.user?.id || isDeleting}
+                    hitSlop={10}
+                    style={styles.chatRowAction}
+                  >
+                    <Text style={styles.chatRowActionText}>•••</Text>
+                  </Pressable>
+                </View>
               );
             })}
           </View>
@@ -459,6 +630,64 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: "800"
   },
+  refreshHintRow: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: -2,
+    marginBottom: 2,
+    paddingHorizontal: 2
+  },
+  refreshHintRowEmpty: {
+    marginBottom: 6
+  },
+  refreshHintIcon: {
+    color: "rgba(255,154,84,0.74)",
+    fontSize: 12,
+    fontWeight: "800"
+  },
+  refreshHintText: {
+    color: "rgba(235,227,214,0.46)",
+    fontSize: 11,
+    fontWeight: "600"
+  },
+  emptyHero: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(255,255,255,0.025)",
+    padding: 14,
+    gap: 8
+  },
+  emptyHeroTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8
+  },
+  emptyHeroEyebrow: {
+    color: "rgba(255,154,84,0.72)",
+    fontSize: 11,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.4
+  },
+  emptyHeroMeta: {
+    color: "rgba(235,227,214,0.34)",
+    fontSize: 11,
+    fontWeight: "600"
+  },
+  emptyHeroTitle: {
+    color: "#FFF8EE",
+    fontSize: 17,
+    fontWeight: "800"
+  },
+  emptyHeroBody: {
+    color: "rgba(235,227,214,0.60)",
+    fontSize: 13,
+    lineHeight: 19
+  },
   matchesSection: {
     gap: 10
   },
@@ -504,6 +733,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden"
+  },
+  matchBubblePhoto: {
+    ...StyleSheet.absoluteFillObject
   },
   matchBubbleInitials: {
     color: "#FFF8EE",
@@ -563,12 +795,18 @@ const styles = StyleSheet.create({
   },
   systemRow: {
     paddingHorizontal: 2,
-    paddingVertical: 2
+    paddingVertical: 2,
+    gap: 4
   },
   systemRowText: {
     color: "rgba(235,227,214,0.58)",
     fontSize: 12,
     lineHeight: 18
+  },
+  systemRowSubtext: {
+    color: "rgba(235,227,214,0.34)",
+    fontSize: 11,
+    lineHeight: 16
   },
   crewRoomList: {
     gap: 10
@@ -716,8 +954,35 @@ const styles = StyleSheet.create({
     fontWeight: "500"
   },
   error: {
-    color: "#FF9F9F",
+    color: "#FFD1D1",
     fontWeight: "600"
+  },
+  errorCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(255,159,159,0.3)",
+    backgroundColor: "rgba(90,24,24,0.28)",
+    padding: 14,
+    gap: 8
+  },
+  errorTitle: {
+    color: "#FFF1F1",
+    fontSize: 14,
+    fontWeight: "800"
+  },
+  retryButton: {
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+    backgroundColor: "rgba(255,255,255,0.04)",
+    paddingHorizontal: 12,
+    paddingVertical: 8
+  },
+  retryButtonText: {
+    color: "#FFF8EE",
+    fontSize: 12,
+    fontWeight: "800"
   },
   loadingRow: {
     flexDirection: "row",
@@ -732,17 +997,26 @@ const styles = StyleSheet.create({
     gap: 0,
     marginTop: -2
   },
+  chatRowShell: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8
+  },
   item: {
+    flex: 1,
     borderRadius: 0,
     borderWidth: 0,
     borderTopWidth: 1,
     borderTopColor: "rgba(255,255,255,0.05)",
-    backgroundColor: "transparent",
+    backgroundColor: theme.colors.canvas,
     paddingHorizontal: 2,
     paddingVertical: 12,
     flexDirection: "row",
     gap: 12,
     alignItems: "center"
+  },
+  itemDisabled: {
+    opacity: 0.68
   },
   itemFirst: {
     borderTopWidth: 0
@@ -759,6 +1033,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden"
+  },
+  chatAvatarPhoto: {
+    ...StyleSheet.absoluteFillObject
   },
   artGlow: {
     position: "absolute",
@@ -817,6 +1094,23 @@ const styles = StyleSheet.create({
   },
   itemPreviewUnread: {
     color: "#EADFD0"
+  },
+  chatRowAction: {
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    marginTop: 1
+  },
+  chatRowActionText: {
+    color: "rgba(255,248,238,0.86)",
+    fontSize: 15,
+    lineHeight: 16,
+    fontWeight: "800"
   },
   empty: {
     borderRadius: 18,

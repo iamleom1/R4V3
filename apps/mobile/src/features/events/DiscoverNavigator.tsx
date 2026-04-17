@@ -2,6 +2,7 @@ import React from "react";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 
 import { EventDiscoveryScreen } from "./EventDiscoveryScreen";
+import { EventCrewRoomScreen } from "./EventCrewRoomScreen";
 import { EventDetailScreen } from "./EventDetailScreen";
 import { EventMatchScreen } from "./EventMatchScreen";
 import { RaveRadioScreen } from "./RaveRadioScreen";
@@ -12,6 +13,7 @@ import type { EventRecord } from "../../types/domain";
 export type DiscoverStackParamList = {
   DiscoverHome: undefined;
   EventDetail: { event: EventRecord };
+  EventCrewRoom: { roomId: string; roomTitle: string; eventTitle: string };
   EventMatch: { event: EventRecord };
   RaveRadio: { eventGenres: string[] };
   WeekendEvents: { weekendEvents: EventRecord[]; selectedEventId?: string };
@@ -32,6 +34,7 @@ export function DiscoverNavigator() {
     >
       <Stack.Screen name="DiscoverHome" component={EventDiscoveryScreen} options={{ headerShown: false }} />
       <Stack.Screen name="EventDetail" component={EventDetailScreen} options={{ headerShown: false }} />
+      <Stack.Screen name="EventCrewRoom" component={EventCrewRoomScreen} options={({ route }) => ({ title: route.params.roomTitle })} />
       <Stack.Screen name="EventMatch" component={EventMatchScreen} options={{ title: "Event Matching" }} />
       <Stack.Screen name="RaveRadio" component={RaveRadioScreen} options={{ title: "R4V3 Radio" }} />
       <Stack.Screen name="WeekendEvents" component={WeekendEventsScreen} options={{ headerShown: false }} />

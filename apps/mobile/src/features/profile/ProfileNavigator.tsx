@@ -6,6 +6,7 @@ import { EventCurationScreen } from "./EventCurationScreen";
 import { ModerationQueueScreen } from "./ModerationQueueScreen";
 import { ProfilePhotosScreen } from "./ProfilePhotosScreen";
 import { ProfileScreen } from "./ProfileScreen";
+import { ScraperSourceEventsScreen } from "./ScraperSourceEventsScreen";
 import { ScraperStatusScreen } from "./ScraperStatusScreen";
 import { SystemAlertsScreen } from "./SystemAlertsScreen";
 
@@ -17,6 +18,7 @@ export type ProfileStackParamList = {
   EventCuration: undefined;
   SystemAlerts: undefined;
   ScraperStatus: undefined;
+  ScraperSourceEvents: { source: "posh" | "dice" };
 };
 
 const Stack = createNativeStackNavigator<ProfileStackParamList>();
@@ -39,6 +41,13 @@ export function ProfileNavigator() {
       <Stack.Screen name="EventCuration" component={EventCurationScreen} options={{ title: "Event Curation" }} />
       <Stack.Screen name="SystemAlerts" component={SystemAlertsScreen} options={{ title: "System Alerts" }} />
       <Stack.Screen name="ScraperStatus" component={ScraperStatusScreen} options={{ title: "Scraper Status" }} />
+      <Stack.Screen
+        name="ScraperSourceEvents"
+        component={ScraperSourceEventsScreen}
+        options={({ route }) => ({
+          title: route.params.source === "posh" ? "POSH Events" : "DICE Events"
+        })}
+      />
     </Stack.Navigator>
   );
 }

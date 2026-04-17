@@ -39,6 +39,24 @@ type EventInsert = {
   source_primary: "ticketmaster";
 };
 
+const DEFAULT_SOCAL_TICKETMASTER_CITIES = [
+  "Los Angeles",
+  "Hollywood",
+  "West Hollywood",
+  "Long Beach",
+  "Santa Ana",
+  "Anaheim",
+  "Costa Mesa",
+  "Pomona",
+  "Ontario",
+  "San Bernardino",
+  "Riverside",
+  "Temecula",
+  "San Diego",
+  "Ventura",
+  "Santa Barbara"
+];
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -78,55 +96,65 @@ Deno.serve(async (req) => {
     const city = String(body?.city ?? Deno.env.get("TICKETMASTER_DEFAULT_CITY") ?? "Los Angeles").trim();
     const countryCode = String(body?.countryCode ?? Deno.env.get("TICKETMASTER_COUNTRY_CODE") ?? "US").trim().toUpperCase();
     const keyword = String(body?.keyword ?? Deno.env.get("TICKETMASTER_KEYWORD") ?? "").trim();
-    const daysAheadInput = Number(body?.daysAhead ?? 30);
-    const daysAhead = Math.max(1, Math.min(90, Number.isFinite(daysAheadInput) ? Math.round(daysAheadInput) : 30));
-    const sizeInput = Number(body?.size ?? 80);
+    const daysAheadInput = Number(body?.daysAhead ?? 60);
+    const daysAhead = Math.max(1, Math.min(90, Number.isFinite(daysAheadInput) ? Math.round(daysAheadInput) : 60));
+    const sizeInput = Number(body?.size ?? 120);
     const size = Math.max(20, Math.min(200, Number.isFinite(sizeInput) ? Math.round(sizeInput) : 80));
 
     const radiusEnv = Number(Deno.env.get("TICKETMASTER_RADIUS_MILES") ?? 80);
     const radiusInput = Number(body?.radiusMiles ?? radiusEnv);
     const radiusMiles = Math.max(5, Math.min(300, Number.isFinite(radiusInput) ? Math.round(radiusInput) : 80));
 
-    const strictKeyword = keyword ||
-      "rave OR edm OR electronic OR dance OR house OR techno OR dubstep OR trance OR hardstyle OR drum and bass OR dnb";
-
     const now = new Date();
     const windowEnd = new Date(now.getTime() + 1000 * 60 * 60 * 24 * daysAhead);
+    const cities = resolveTicketmasterCities(city);
+    const eventResponses = await Promise.all(
+      cities.map((cityName) => {
+        const params = new URLSearchParams({
+          apikey: ticketmasterApiKey,
+          size: String(size),
+          sort: "date,asc",
+          countryCode,
+          classificationName: "music",
+          radius: String(radiusMiles),
+          unit: "miles",
+          city: cityName,
+          startDateTime: toTicketmasterIso(now),
+          endDateTime: toTicketmasterIso(windowEnd)
+        });
 
-    const baseParams = new URLSearchParams({
-      apikey: ticketmasterApiKey,
-      size: String(size),
-      sort: "date,asc",
-      countryCode,
-      classificationName: "music",
-      radius: String(radiusMiles),
-      unit: "miles",
-      city,
-      startDateTime: toTicketmasterIso(now),
-      endDateTime: toTicketmasterIso(windowEnd)
-    });
+        if (keyword) {
+          params.set("keyword", keyword);
+        }
 
-    const strictParams = new URLSearchParams(baseParams);
-    strictParams.set("keyword", strictKeyword);
+        return fetchTicketmasterEvents(params);
+      })
+    );
 
-    const [strictEvents, broadEvents] = await Promise.all([
-      fetchTicketmasterEvents(strictParams),
-      fetchTicketmasterEvents(baseParams)
-    ]);
-
-    const merged = dedupeById([...strictEvents, ...broadEvents])
+    const merged = dedupeById(eventResponses.flat())
       .map(mapTicketmasterEvent)
       .filter((event): event is { providerEventId: string; row: EventInsert; raw: TicketmasterEvent } => Boolean(event))
-      .filter((event) => isEdmOrRaveEvent(event.row))
+      .filter((event) => isSupportedDiscoveryCity(event.row.city))
+      .filter((event) => isEdmDiscoveryEvent(event.row))
       .sort((a, b) => scoreEvent(b.row) - scoreEvent(a.row));
-
-    if (merged.length === 0) {
-      return json({ ok: true, fetched: 0, inserted: 0, updated: 0, message: "No events matched filters." });
-    }
 
     const admin = createClient(supabaseUrl, serviceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false }
     });
+
+    if (merged.length === 0) {
+      await recordJobRun(admin, "ingest-events", "success", {
+        fetched: 0,
+        inserted: 0,
+        updated: 0,
+        city,
+        countryCode,
+        daysAhead,
+        radiusMiles,
+        message: "No events matched filters."
+      });
+      return json({ ok: true, fetched: 0, inserted: 0, updated: 0, message: "No events matched filters." });
+    }
 
     const providerIds = merged.map((event) => event.providerEventId);
     const { data: sourceRows, error: sourceError } = await (admin.from("event_sources") as any)
@@ -215,7 +243,7 @@ Deno.serve(async (req) => {
       inserted = sourceInserts.length;
     }
 
-    return json({
+    const payload = {
       ok: true,
       fetched: merged.length,
       inserted,
@@ -224,11 +252,39 @@ Deno.serve(async (req) => {
       countryCode,
       daysAhead,
       radiusMiles
-    });
+    };
+    await recordJobRun(admin, "ingest-events", "success", payload);
+    return json(payload);
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : "Unexpected server error." }, 500);
+    const message = error instanceof Error ? error.message : "Unexpected server error.";
+    try {
+      const supabaseUrl = Deno.env.get("SUPABASE_URL");
+      const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+      if (supabaseUrl && serviceRoleKey) {
+        const admin = createClient(supabaseUrl, serviceRoleKey, {
+          auth: { persistSession: false, autoRefreshToken: false }
+        });
+        await recordJobRun(admin, "ingest-events", "failure", { error: message });
+      }
+    } catch {
+      // Do not mask the main error response.
+    }
+    return json({ error: message }, 500);
   }
 });
+
+async function recordJobRun(
+  admin: ReturnType<typeof createClient>,
+  jobName: string,
+  status: "success" | "failure",
+  details: Record<string, unknown>
+) {
+  await (admin.rpc as any)("record_job_run", {
+    p_job_name: jobName,
+    p_status: status,
+    p_details: details
+  });
+}
 
 function toTicketmasterIso(value: Date) {
   return value.toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -254,6 +310,15 @@ function dedupeById(events: TicketmasterEvent[]) {
     byId.set(id, event);
   }
   return Array.from(byId.values());
+}
+
+function resolveTicketmasterCities(cityConfig: string) {
+  const configured = cityConfig
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const ordered = configured.length > 0 ? [...configured, ...DEFAULT_SOCAL_TICKETMASTER_CITIES] : DEFAULT_SOCAL_TICKETMASTER_CITIES;
+  return Array.from(new Set(ordered));
 }
 
 function mapTicketmasterEvent(event: TicketmasterEvent): { providerEventId: string; row: EventInsert; raw: TicketmasterEvent } | null {
@@ -320,24 +385,54 @@ function deriveGenres(event: TicketmasterEvent) {
   return Array.from(tags).slice(0, 8);
 }
 
+const EDM_DISCOVERY_KEYWORDS = [
+  "edm",
+  "rave",
+  "electronic",
+  "dance/electronic",
+  "dj",
+  "house",
+  "tech house",
+  "progressive house",
+  "afro house",
+  "techno",
+  "melodic techno",
+  "dubstep",
+  "drum and bass",
+  "dnb",
+  "trance",
+  "hardstyle",
+  "bass",
+  "future bass",
+  "trap",
+  "uk garage",
+  "garage",
+  "breakbeat",
+  "electro"
+];
+
+const NON_EDM_EXCLUSION_KEYWORDS = [
+  "comedy",
+  "podcast",
+  "worship",
+  "ballet",
+  "orchestra",
+  "symphony",
+  "musical",
+  "broadway",
+  "play",
+  "opera",
+  "latin",
+  "mariachi",
+  "country",
+  "folk",
+  "children",
+  "tribute"
+];
+
 function isEdmOrRaveEvent(event: EventInsert) {
   const text = `${event.title} ${event.venue_name ?? ""} ${event.genre_tags.join(" ")}`.toLowerCase();
-  const keywords = [
-    "edm",
-    "rave",
-    "electronic",
-    "dance",
-    "house",
-    "tech house",
-    "techno",
-    "dubstep",
-    "trance",
-    "hardstyle",
-    "drum and bass",
-    "dnb",
-    "bass"
-  ];
-  return keywords.some((keyword) => text.includes(keyword));
+  return EDM_DISCOVERY_KEYWORDS.some((keyword) => text.includes(keyword));
 }
 
 function scoreEvent(event: EventInsert) {
@@ -352,6 +447,26 @@ function scoreEvent(event: EventInsert) {
   if (text.includes("drum and bass") || text.includes("dnb")) score += 2;
   if (event.genre_tags.length > 0) score += 1;
   return score;
+}
+
+function isEdmDiscoveryEvent(event: EventInsert) {
+  const text = `${event.title} ${event.venue_name ?? ""} ${event.genre_tags.join(" ")}`.toLowerCase();
+  if (!isEdmOrRaveEvent(event)) {
+    return false;
+  }
+  return !NON_EDM_EXCLUSION_KEYWORDS.some((keyword) => text.includes(keyword));
+}
+
+function isSupportedDiscoveryCity(city: string | null | undefined) {
+  if (!city) {
+    return false;
+  }
+  const normalized = normalizeDiscoveryCity(city);
+  return DEFAULT_SOCAL_TICKETMASTER_CITIES.some((candidate) => normalizeDiscoveryCity(candidate) === normalized);
+}
+
+function normalizeDiscoveryCity(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
 function json(payload: unknown, status = 200) {

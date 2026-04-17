@@ -4,6 +4,8 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useAppState } from "../../app/AppProvider";
+import { RemoteImage } from "../../components/RemoteImage";
+import { toUserFacingError } from "../../lib/userFacingErrors";
 import { theme } from "../../theme";
 import type { EventRecord, RSVPStatus } from "../../types/domain";
 import { hasEventCrewChat, listEventAudienceMetrics } from "./eventRepository";
@@ -50,17 +52,21 @@ export function WeekendEventsScreen({ route, navigation }: Props) {
       rootNav?.navigate?.("Auth");
       return;
     }
-    setIsSavingId(eventId);
-    setError(null);
-    const result = await setRsvp(eventId, status);
-    if (!result.ok) {
-      setError(result.error);
+    try {
+      setIsSavingId(eventId);
+      setError(null);
+      const result = await setRsvp(eventId, status);
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      const metrics = await listEventAudienceMetrics([eventId]);
+      setAudienceMetrics((prev) => ({ ...prev, ...metrics }));
+    } catch (error) {
+      setError(toUserFacingError(error, "Couldn’t update your RSVP."));
+    } finally {
       setIsSavingId(null);
-      return;
     }
-    const metrics = await listEventAudienceMetrics([eventId]);
-    setAudienceMetrics((prev) => ({ ...prev, ...metrics }));
-    setIsSavingId(null);
   }
 
   async function handleGoingPress(event: EventRecord) {
@@ -115,10 +121,18 @@ export function WeekendEventsScreen({ route, navigation }: Props) {
               onPress={() => navigation.navigate("EventDetail", { event })}
               style={[styles.card, { backgroundColor: palette.base }]}
             >
-              <View style={[styles.glow, { backgroundColor: palette.glow }]} />
-              <View style={[styles.glow, styles.glowRight, { backgroundColor: palette.glowRight }]} />
-              <View style={[styles.beam, { backgroundColor: palette.beamA, transform: [{ rotate: "-8deg" }] }]} />
-              <View style={[styles.beam, styles.beamTwo, { backgroundColor: palette.beamB, transform: [{ rotate: "6deg" }] }]} />
+              <FlyerSurface
+                uri={event.flyerUrl}
+                fallback={
+                  <>
+                    <View style={[styles.glow, { backgroundColor: palette.glow }]} />
+                    <View style={[styles.glow, styles.glowRight, { backgroundColor: palette.glowRight }]} />
+                    <View style={[styles.beam, { backgroundColor: palette.beamA, transform: [{ rotate: "-8deg" }] }]} />
+                    <View style={[styles.beam, styles.beamTwo, { backgroundColor: palette.beamB, transform: [{ rotate: "6deg" }] }]} />
+                  </>
+                }
+              />
+              {event.flyerUrl ? <View style={styles.flyerOverlay} /> : null}
 
               <View style={styles.cardTop}>
                 <Text style={styles.eventTitle}>{event.title}</Text>
@@ -149,6 +163,16 @@ export function WeekendEventsScreen({ route, navigation }: Props) {
       </View>
     </ScrollView>
   );
+}
+
+function FlyerSurface(props: { uri?: string | null; fallback: React.ReactNode }) {
+  const showImage = Boolean(props.uri);
+
+  if (!showImage) {
+    return <>{props.fallback}</>;
+  }
+
+  return <RemoteImage uri={props.uri} style={styles.flyerImage} />;
 }
 
 function formatEventDate(startsAt: string) {
@@ -221,6 +245,13 @@ const styles = StyleSheet.create({
     padding: 14,
     overflow: "hidden",
     gap: 12
+  },
+  flyerImage: {
+    ...StyleSheet.absoluteFillObject
+  },
+  flyerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(10,12,16,0.42)"
   },
   glow: {
     position: "absolute",

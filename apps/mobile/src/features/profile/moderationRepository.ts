@@ -77,6 +77,16 @@ export type ScraperJobRun = {
   bySource: Record<string, number>;
 };
 
+export type ScraperSourceEvent = {
+  id: string;
+  title: string;
+  venueName: string | null;
+  city: string | null;
+  startsAt: string;
+  sourcePrimary: "posh" | "dice";
+  genreTags: string[];
+};
+
 type QueueRow = {
   queue_id: string;
   report_id: string;
@@ -152,6 +162,16 @@ type ScraperJobRunRow = {
   inserted: number | string | null;
   updated: number | string | null;
   by_source: Record<string, unknown> | null;
+};
+
+type ScraperSourceEventRow = {
+  id: string;
+  title: string;
+  venue_name: string | null;
+  city: string | null;
+  starts_at: string;
+  source_primary: ScraperSourceEvent["sourcePrimary"];
+  genre_tags: string[] | null;
 };
 
 export async function isCurrentUserModerator() {
@@ -419,6 +439,54 @@ export async function listScraperJobRuns(limit = 10): Promise<ScraperJobRun[]> {
     inserted: Number(row.inserted ?? 0),
     updated: Number(row.updated ?? 0),
     bySource: coerceNumericRecord(row.by_source)
+  }));
+}
+
+export async function listScraperSourceEvents(limitPerSource = 12): Promise<Record<ScraperSourceEvent["sourcePrimary"], ScraperSourceEvent[]>> {
+  const supabase = getSupabaseClient();
+  const empty: Record<ScraperSourceEvent["sourcePrimary"], ScraperSourceEvent[]> = { posh: [], dice: [] };
+  if (!supabase) {
+    return empty;
+  }
+
+  const [posh, dice] = await Promise.all([
+    listScraperSourceEventsBySource("posh", limitPerSource),
+    listScraperSourceEventsBySource("dice", limitPerSource)
+  ]);
+
+  return { posh, dice };
+}
+
+export async function listScraperSourceEventsBySource(
+  source: ScraperSourceEvent["sourcePrimary"],
+  limit = 24
+): Promise<ScraperSourceEvent[]> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return [];
+  }
+
+  const nowIso = new Date().toISOString();
+  const eventsTable = supabase.from("events") as any;
+  const { data, error } = await eventsTable
+    .select("id,title,venue_name,city,starts_at,source_primary,genre_tags")
+    .eq("source_primary", source)
+    .gte("starts_at", nowIso)
+    .order("starts_at", { ascending: true })
+    .limit(Math.max(1, limit));
+
+  if (error || !Array.isArray(data)) {
+    return [];
+  }
+
+  return (data as ScraperSourceEventRow[]).map((row) => ({
+    id: row.id,
+    title: row.title,
+    venueName: row.venue_name,
+    city: row.city,
+    startsAt: row.starts_at,
+    sourcePrimary: row.source_primary,
+    genreTags: row.genre_tags ?? []
   }));
 }
 

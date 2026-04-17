@@ -1,16 +1,18 @@
-# Product Direction (Working Notes)
+# Product Direction
+
+Last updated: April 16, 2026
 
 ## Core Vision
 
-- Build a matching-style app for people in the raving / EDM community.
-- Community-first product, not dating-first.
-- Help users connect with others in the scene in a way that feels less toxic and less stereotypical than traditional dating apps.
-- Keep the experience centered on real-world music culture and shared events.
+- Build a community and matching app for people in the EDM / rave scene.
+- Keep the product community-first, with dating as an explicit optional mode.
+- Help users connect through shared events, music culture, and coordination utility instead of generic dating-app mechanics.
+- Make trust, consent, and event context part of the core experience.
 
 ## Profile Experience
 
 - User profiles should include basic information and bio.
-- Profiles should also showcase previous events attended (social proof + shared history in the community).
+- Profiles should capture vibe, genre, lifestyle, and event-relevant context.
 - Matching should feel identity-first and vibe-based, not just appearance-based.
 
 ## Matching + Swiping
@@ -19,27 +21,35 @@
 - Avoid making the product feel like a generic dating app clone.
 - Emphasize community and shared context in ranking and presentation.
 
-## Event-Based Matching (Premium / Paid Users)
+## Event-Centered Product Model
 
-- Create a paid feature where users can view upcoming events and match with people attending that specific event.
-- Users using this feature explicitly understand they are agreeing to let others know they may be attending that event.
-- This should be framed with clear consent and visibility language.
+- Event discovery is a primary surface, not side content.
+- Event attendance and event intent should act as major context signals for connection.
+- Users should understand when they are exposing event attendance or crew visibility to others.
+- Event-based connection should be framed with explicit consent and visibility language.
 
 ## Group Communication for Events
 
-- Add a group chat feature for users going to specific events.
-- Group chats should act as a centralized communication network for that event.
-- Use cases include:
-  - sharing updates
-  - sharing locations
-  - improving coordination in busy/noisy venues
-  - reducing frustrating communication at events
+- Event crew rooms and group chat should help people coordinate before and during events.
+- Messaging should feel like community coordination tooling, not just a generic inbox.
+- Utility matters:
+  - pregame planning
+  - meetup coordination
+  - crew communication in noisy venues
+  - safety-oriented check-ins
 
 ## Discover / Event Discovery
 
-- Add a Discover page for upcoming events.
-- Allow users to browse/filter upcoming events by music genre.
-- Event discovery should support the broader community experience, not only matching.
+- Discovery should support browsing upcoming events and entering event-specific social flows.
+- Music genre and vibe signals should support discovery without overwhelming the event browsing experience.
+- Curated/manual events should coexist with imported inventory.
+
+## Trust And Safety
+
+- Community mode should be the default emphasis.
+- Dating mode should be opt-in and clearly framed.
+- Blocking, reporting, moderation, and consent language should feel integrated into the product rather than bolted on.
+- The product should avoid surprise visibility around attendance, matching, or messaging.
 
 ## Product Philosophy (Current)
 
@@ -47,8 +57,3 @@
 - Events + shared music culture > abstract algorithmic matching
 - Consent + clarity > surprise visibility
 - Utility at events (coordination, communication) is a core differentiator
-
-## Notes
-
-- User is not done defining the product yet; this is the current baseline and should be extended in future iterations.
-

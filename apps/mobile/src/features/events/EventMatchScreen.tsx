@@ -17,12 +17,13 @@ import {
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 
 import { useAppState } from "../../app/AppProvider";
+import { RemoteImage } from "../../components/RemoteImage";
 import { theme } from "../../theme";
 import type { EventRecord } from "../../types/domain";
 import { createSwipeDecision } from "../matches/matchRepository";
 import {
   listEventCandidatePreview,
-  listSeededEventCandidatePreview,
+  listMyEventRsvps,
   startEventCrewThreadSeed,
   type EventCandidatePreview
 } from "./eventRepository";
@@ -37,7 +38,7 @@ const SCREEN_WIDTH = Dimensions.get("window").width;
 const SCREEN_HEIGHT = Dimensions.get("window").height;
 
 export function EventMatchScreen({ route, navigation }: Props) {
-  const { session } = useAppState();
+  const { session, profileDraft } = useAppState();
   const event = route.params.event;
   const [candidates, setCandidates] = useState<EventSwipeCandidate[]>([]);
   const [index, setIndex] = useState(0);
@@ -51,10 +52,15 @@ export function EventMatchScreen({ route, navigation }: Props) {
   const swipe = useRef(new Animated.ValueXY()).current;
   const pulse = useRef(new Animated.Value(0)).current;
   const lockRef = useRef(false);
-  const current = candidates[index] ?? null;
-  const ghost = useMemo(() => candidates.slice(index + 1, index + 3), [candidates, index]);
+  const filteredCandidates = useMemo(
+    () => candidates.filter((candidate) => candidateMatchesProfilePreferences(candidate, profileDraft)),
+    [candidates, profileDraft]
+  );
+  const current = filteredCandidates[index] ?? null;
+  const ghost = useMemo(() => filteredCandidates.slice(index + 1, index + 3), [filteredCandidates, index]);
   const stackHeight = Math.max(410, Math.min(570, SCREEN_HEIGHT - 270));
   const photoStageHeight = Math.max(260, Math.min(470, stackHeight - 84));
+  const eventGenreLabel = useMemo(() => compactGenreLabel(event.genreTags?.[0] ?? null), [event.genreTags]);
   const currentDistance = typeof current?.distanceKm === "number" && Number.isFinite(current.distanceKm)
     ? `${Math.max(1, Math.round(current.distanceKm * 0.621371))} miles away`
     : "This event";
@@ -75,16 +81,17 @@ export function EventMatchScreen({ route, navigation }: Props) {
       return;
     }
 
-    const rows = await listEventCandidatePreview(event.id, session.user.id, 20);
-    if (rows.length > 0) {
-      setCandidates(rows.map((r) => ({ ...r, event })));
+    const myRsvps = await listMyEventRsvps(session.user.id);
+    if (myRsvps[event.id] !== "going") {
+      setCandidates([]);
       setIndex(0);
+      setError("Join this event to unlock matching.");
       setIsLoading(false);
       return;
     }
 
-    const seededRows = await listSeededEventCandidatePreview(event, session.user.id, 12);
-    setCandidates(seededRows.map((r) => ({ ...r, event })));
+    const rows = await listEventCandidatePreview(event.id, session.user.id, 20);
+    setCandidates(rows.map((r) => ({ ...r, event })));
     setIndex(0);
     setIsLoading(false);
   }
@@ -285,18 +292,19 @@ export function EventMatchScreen({ route, navigation }: Props) {
               </Animated.View>
 
               <View style={[styles.photoStage, { flex: 1, minHeight: photoStageHeight }]}>
-                <View style={styles.photoGlow} />
-                <View style={styles.photoOrb} />
-                <View style={styles.photoNoiseStripe} />
-                <View style={styles.stageBeamLeft} />
-                <View style={styles.stageBeamRight} />
+                {current.profilePhotoUrl ? <RemoteImage uri={current.profilePhotoUrl} style={styles.profilePhotoImage} /> : null}
+                {!current.profilePhotoUrl ? <View style={styles.photoGlow} /> : null}
+                {!current.profilePhotoUrl ? <View style={styles.photoOrb} /> : null}
+                {!current.profilePhotoUrl ? <View style={styles.photoNoiseStripe} /> : null}
+                {!current.profilePhotoUrl ? <View style={styles.stageBeamLeft} /> : null}
+                {!current.profilePhotoUrl ? <View style={styles.stageBeamRight} /> : null}
 
                 <View style={styles.photoOverlay}>
                   <View pointerEvents="none" style={styles.photoBottomFadeSoft} />
                   <View pointerEvents="none" style={styles.photoBottomFadeStrong} />
                   <View style={styles.photoTopMeta}>
                     <View style={styles.eventPill}>
-                      <Text style={styles.eventPillText}>{event.title}</Text>
+                      <Text style={styles.eventPillText}>{eventGenreLabel}</Text>
                     </View>
                     <View style={styles.photoModePill}>
                       <Text style={styles.photoModePillText}>{current.discoveryLabel ?? "Actively matching"}</Text>
@@ -307,6 +315,7 @@ export function EventMatchScreen({ route, navigation }: Props) {
                     <View style={styles.collapsedCardMeta}>
                       <View style={styles.collapsedCardMetaMain}>
                         <Text style={styles.photoTitle}>{current.displayName}</Text>
+                        <Text style={styles.photoIntentLine}>Interested • Solo</Text>
                         <Text style={styles.photoSubtitle}>{current.city || "City hidden"}</Text>
                         <Text style={styles.photoDistance}>{currentDistance}</Text>
                       </View>
@@ -322,20 +331,15 @@ export function EventMatchScreen({ route, navigation }: Props) {
                 <View style={styles.expandedInCardBody}>
                   <View style={styles.modalSection}>
                     <Text style={styles.modalSectionLabel}>About</Text>
-                    <Text style={styles.modalBodyText}>
-                      {current.softCandidate
-                        ? `${current.overlapReason}. Preview this person from the same event ecosystem and send a crew invite that activates when both enable crew matching.`
-                        : `${current.overlapReason}. Swipe right to connect around this event. Swiping here does not publicly list all attendees on Discover.`}
-                    </Text>
+                    <Text style={styles.modalBodyText}>{current.bio?.trim() || "Add a bio to get more matches"}</Text>
                   </View>
 
                   <View style={styles.modalSection}>
-                    <Text style={styles.modalSectionLabel}>Basic info</Text>
+                    <Text style={styles.modalSectionLabel}>Meetup info</Text>
                     <View style={styles.cleanFactsList}>
                       <FactLine label="Location" value={current.city ?? "Not shared"} />
                       <FactLine label="Distance" value={currentDistance} />
-                      <FactLine label="Height" value={current.height?.trim() || "Not shared"} />
-                      <FactLine label="Education" value={current.education?.trim() || "Not shared"} />
+                      <FactLine label="Crew size preference" value="Solo" />
                     </View>
                   </View>
 
@@ -343,7 +347,7 @@ export function EventMatchScreen({ route, navigation }: Props) {
                     <Text style={styles.modalSectionLabel}>Showcase</Text>
                     <View style={styles.showcasePill}>
                       <View style={styles.showcaseGroup}>
-                        <Text style={styles.showcaseGroupLabel}>This event vibes</Text>
+                        <Text style={styles.showcaseGroupLabel}>Vibe</Text>
                         <View style={styles.showcaseGrid}>
                           {(current.vibeTags.length > 0 ? current.vibeTags : ["Community", "Meetup"]).slice(0, 4).map((tag, idx) => (
                             <EventArtTile key={`${tag}-${idx}`} title={tag} index={idx} />
@@ -351,10 +355,10 @@ export function EventMatchScreen({ route, navigation }: Props) {
                         </View>
                       </View>
                       <View style={styles.showcaseGroup}>
-                        <Text style={styles.showcaseGroupLabel}>Favorite music</Text>
+                        <Text style={styles.showcaseGroupLabel}>Been to 5+ events</Text>
                         <View style={styles.showcaseGrid}>
-                          {(current.musicGenres.length > 0 ? current.musicGenres : ["House", "Techno"]).slice(0, 4).map((genre, idx) => (
-                            <MusicArtTile key={`${genre}-${idx}`} title={genre} index={idx} />
+                          {[(event.title || "Shared event")].slice(0, 1).map((genre, idx) => (
+                            <MusicArtTile key={`${genre}-${idx}`} title={`Went to: ${genre}`} index={idx} />
                           ))}
                         </View>
                       </View>
@@ -440,6 +444,38 @@ export function EventMatchScreen({ route, navigation }: Props) {
   );
 }
 
+function candidateMatchesProfilePreferences(
+  candidate: Pick<EventCandidatePreview, "gender" | "age">,
+  profileDraft: { interestedGenders: string[]; preferredAgeMin: number | null; preferredAgeMax: number | null }
+) {
+  const interested = profileDraft.interestedGenders;
+  if (interested.length > 0) {
+    const candidateGender = (candidate.gender ?? "").trim().toLowerCase();
+    if (!candidateGender) {
+      return false;
+    }
+    const genderMatch = interested.some((value) => value.trim().toLowerCase() === candidateGender);
+    if (!genderMatch) {
+      return false;
+    }
+  }
+
+  const hasAgeConstraint = typeof profileDraft.preferredAgeMin === "number" || typeof profileDraft.preferredAgeMax === "number";
+  if (hasAgeConstraint && typeof candidate.age !== "number") {
+    return false;
+  }
+  if (typeof candidate.age === "number") {
+    if (typeof profileDraft.preferredAgeMin === "number" && candidate.age < profileDraft.preferredAgeMin) {
+      return false;
+    }
+    if (typeof profileDraft.preferredAgeMax === "number" && candidate.age > profileDraft.preferredAgeMax) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function FactLine(props: { label: string; value: string }) {
   return (
     <View style={styles.factLine}>
@@ -471,6 +507,15 @@ function MusicArtTile(props: { title: string; index: number }) {
       </View>
     </View>
   );
+}
+
+function compactGenreLabel(value: string | null | undefined) {
+  const raw = (value ?? "").trim();
+  if (!raw) {
+    return "EVENT";
+  }
+  const token = raw.replace(/[&/,+]/g, " ").split(/\s+/).filter(Boolean)[0] ?? "Event";
+  return token.slice(0, 12).toUpperCase();
 }
 
 function eventArtPalette(index: number) {
@@ -576,6 +621,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     overflow: "hidden"
+  },
+  profilePhotoImage: {
+    ...StyleSheet.absoluteFillObject
   },
   photoGlow: {
     position: "absolute",
@@ -716,6 +764,11 @@ const styles = StyleSheet.create({
   },
   collapsedCardMetaMain: {
     gap: 4
+  },
+  photoIntentLine: {
+    color: "rgba(255,249,239,0.72)",
+    fontSize: 12,
+    fontWeight: "700"
   },
   inlineExpandChip: {
     alignSelf: "flex-start",

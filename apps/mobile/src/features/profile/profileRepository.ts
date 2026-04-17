@@ -8,6 +8,9 @@ type ProfileRow = {
   city: string | null;
   bio: string | null;
   gender: string | null;
+  interested_genders: string[] | null;
+  preferred_age_min: number | null;
+  preferred_age_max: number | null;
   height: string | null;
   zodiac: string | null;
   education: string | null;
@@ -42,7 +45,7 @@ export async function loadProfileDraftFromSupabase(userId: string): Promise<Part
   const { data, error } = await supabase
     .from("profiles")
     .select(
-      "display_name,birthdate,city,bio,gender,height,zodiac,education,pronouns,smoking_preference,drinking_preference,crew_style,meetup_style,safety_note,location_lat,location_lng,location_accuracy_meters,location_captured_at,vibe_tags,music_genres,community_mode_enabled,dating_mode_enabled,onboarding_completed"
+      "display_name,birthdate,city,bio,gender,interested_genders,preferred_age_min,preferred_age_max,height,zodiac,education,pronouns,smoking_preference,drinking_preference,crew_style,meetup_style,safety_note,location_lat,location_lng,location_accuracy_meters,location_captured_at,vibe_tags,music_genres,community_mode_enabled,dating_mode_enabled,onboarding_completed"
     )
     .eq("id", userId)
     .maybeSingle();
@@ -127,6 +130,9 @@ function mapRowToDraft(row: ProfileRow): Partial<ProfileDraft> {
     city: row.city ?? "",
     bio: row.bio ?? "",
     gender: row.gender ?? "",
+    interestedGenders: row.interested_genders ?? [],
+    preferredAgeMin: typeof row.preferred_age_min === "number" ? row.preferred_age_min : 21,
+    preferredAgeMax: typeof row.preferred_age_max === "number" ? row.preferred_age_max : 35,
     height: row.height ?? "",
     zodiac: row.zodiac ?? "",
     education: row.education ?? "",

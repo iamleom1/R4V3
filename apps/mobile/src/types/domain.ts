@@ -24,6 +24,13 @@ export interface EventRecord {
   venueName: string | null;
   city: string | null;
   startsAt: string;
+  endsAt?: string | null;
   genreTags?: string[];
-  sourcePrimary: "ticketmaster" | "seatgeek" | "manual";
+  sourcePrimary: "ticketmaster" | "seatgeek" | "manual" | "posh" | "dice";
+  isFeatured?: boolean;
+  promotionRank?: number;
+  featuredUntil?: string | null;
+  curationNote?: string | null;
+  flyerUrl?: string | null;
+  musicPreviewUrl?: string | null;
 }

@@ -1,19 +1,19 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Animated, Easing, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import React, { useMemo, useState } from "react";
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useNavigation, useRoute } from "@react-navigation/native";
 
 import { useAppState } from "../../app/AppProvider";
 import { InputField } from "../../components/ui/InputField";
+import { trackEvent } from "../../lib/telemetry";
 import { getSupabaseClient } from "../../lib/supabase";
+import { toUserFacingError } from "../../lib/userFacingErrors";
 import { theme } from "../../theme";
-
-type AuthMode = "email" | "magic_link";
 
 type AuthRouteParams = {
   intent?: "crew_chat" | "gated_action";
   authPrompt?: string;
 };
-type LoginStep = "email" | "password";
+type AuthStep = "email" | "login_password" | "signup_password";
 
 export function AuthScreen() {
   const { authStatus } = useAppState();
@@ -21,14 +21,13 @@ export function AuthScreen() {
   const route = useRoute<any>();
 
   const params = (route?.params ?? {}) as AuthRouteParams;
-  const [mode, setMode] = useState<AuthMode>("email");
-  const [loginStep, setLoginStep] = useState<LoginStep>("email");
+  const [authStep, setAuthStep] = useState<AuthStep>("email");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [signupPasswordConfirm, setSignupPasswordConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const stepAnim = useRef(new Animated.Value(0)).current;
 
   const supabaseEnabled = Boolean(getSupabaseClient());
 
@@ -39,7 +38,7 @@ export function AuthScreen() {
     if (params.intent === "crew_chat") {
       return "Sign in to join this crew chat.";
     }
-    return "Sign in to RSVP, match with crews, and join event chats.";
+    return "Sign in to RSVP, find a crew, and unlock event chat.";
   }, [params.authPrompt, params.intent]);
 
   async function handleEmailContinue() {
@@ -54,28 +53,47 @@ export function AuthScreen() {
 
     setIsSubmitting(true);
     try {
-      setLoginStep("password");
+      const supabase = getSupabaseClient();
+      if (!supabase) {
+        setError("Continue with email needs Supabase auth keys.");
+        return;
+      }
+
+      const { data, error: existsError } = await supabase.functions.invoke("email-exists", {
+        body: { email: trimmedEmail }
+      });
+
+      if (existsError) {
+        setError(toUserFacingError(existsError, "Couldn’t verify this email right now."));
+        void trackEvent("email_continue_failed", { message: existsError.message });
+        return;
+      }
+
+      if (data?.exists) {
+        setPassword("");
+        setSignupPasswordConfirm("");
+        setAuthStep("login_password");
+        void trackEvent("email_continue_requested", { next_step: "login_password" });
+        return;
+      }
+
+      setPassword("");
+      setSignupPasswordConfirm("");
+      setAuthStep("signup_password");
+      void trackEvent("email_continue_requested", { next_step: "signup_password" });
     } finally {
       setIsSubmitting(false);
     }
   }
 
-  useEffect(() => {
-    Animated.timing(stepAnim, {
-      toValue: loginStep === "password" ? 1 : 0,
-      duration: 220,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true
-    }).start();
-  }, [loginStep, stepAnim]);
-
   async function handlePasswordLogin() {
     setError(null);
     setMessage(null);
+
     const trimmedEmail = email.trim();
     const trimmedPassword = password.trim();
     if (!trimmedEmail) {
-      setLoginStep("email");
+      setAuthStep("email");
       setError("Email is required.");
       return;
     }
@@ -88,7 +106,7 @@ export function AuthScreen() {
     try {
       const supabase = getSupabaseClient();
       if (!supabase) {
-        setMessage("Email/password login needs Supabase auth keys.");
+        setError("Log in needs Supabase auth keys.");
         return;
       }
 
@@ -97,20 +115,38 @@ export function AuthScreen() {
         password: trimmedPassword
       });
       if (signInError) {
-        setError(signInError.message);
+        setError(toUserFacingError(signInError, "Couldn’t log in right now."));
+        void trackEvent("password_login_failed", { message: signInError.message });
+        return;
       }
+
+      void trackEvent("password_login_requested", {});
     } finally {
       setIsSubmitting(false);
     }
   }
 
-  async function handleSendMagicLink() {
+  async function handleSignUp() {
     setError(null);
     setMessage(null);
 
     const trimmedEmail = email.trim();
+    const trimmedPassword = password.trim();
     if (!trimmedEmail) {
+      setAuthStep("email");
       setError("Email is required.");
+      return;
+    }
+    if (!trimmedPassword) {
+      setError("Password is required.");
+      return;
+    }
+    if (trimmedPassword.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+    if (trimmedPassword !== signupPasswordConfirm.trim()) {
+      setError("Passwords do not match.");
       return;
     }
 
@@ -118,21 +154,27 @@ export function AuthScreen() {
     try {
       const supabase = getSupabaseClient();
       if (!supabase) {
-        setError("Email Link needs Supabase auth keys.");
+        setError("Sign up needs Supabase auth keys.");
         return;
       }
 
-      const { error: otpError } = await supabase.auth.signInWithOtp({
+      const { data, error: signUpError } = await supabase.auth.signUp({
         email: trimmedEmail,
-        options: { shouldCreateUser: true }
+        password: trimmedPassword
       });
 
-      if (otpError) {
-        setError(otpError.message);
+      if (signUpError) {
+        setError(toUserFacingError(signUpError, "Couldn’t create your account right now."));
+        void trackEvent("signup_failed", { message: signUpError.message });
         return;
       }
 
-      setMessage("Check your email for a secure sign-in link.");
+      if (!data.session) {
+        setError("Sign up completed, but no session was created. Disable email confirmation in Supabase Auth to continue directly to onboarding.");
+        return;
+      }
+
+      void trackEvent("signup_completed", {});
     } finally {
       setIsSubmitting(false);
     }
@@ -178,9 +220,9 @@ export function AuthScreen() {
         </View>
 
         <View style={styles.headerBlock}>
-          <Text style={styles.headerTitle}>Join the crew.</Text>
+          <Text style={styles.headerTitle}>Find your crew for events</Text>
           <Text style={styles.headerSubtext}>{subtext}</Text>
-          <Text style={styles.supportingCopy}>Continue with email to join crews, RSVP to events, and unlock event chats.</Text>
+          <Text style={styles.supportingCopy}>Use email to join crews, manage your profile, and control visibility from your account screen later.</Text>
           <View style={styles.benefitsWrap}>
             <Chip label="Event-based matching" />
             <Chip label="Crew chats" />
@@ -188,107 +230,61 @@ export function AuthScreen() {
           </View>
         </View>
 
-        <View style={styles.tabsRow}>
-          <TabButton
-            label="Log in"
-            active={mode === "email"}
-            onPress={() => {
-              setMode("email");
-            }}
-          />
-          <TabButton
-            label="Email Link"
-            active={mode === "magic_link"}
-            onPress={() => {
-              setMode("magic_link");
-              setLoginStep("email");
-              setPassword("");
-            }}
-          />
-        </View>
+        <View style={styles.formBlock}>
+          {authStep === "email" ? (
+            <>
+              <InputField label="Email" value={email} onChangeText={setEmail} keyboardType="email-address" />
+              <Text style={styles.microcopy}>We&apos;ll create an account if you&apos;re new.</Text>
+              <Pressable
+                style={[styles.primaryButton, (isSubmitting || authStatus === "loading") && styles.primaryButtonDisabled]}
+                onPress={() => void handleEmailContinue()}
+                disabled={isSubmitting || authStatus === "loading"}
+              >
+                <Text style={styles.primaryButtonText}>{isSubmitting ? "Checking..." : "Continue with email"}</Text>
+              </Pressable>
+            </>
+          ) : null}
 
-        {mode === "email" ? (
-          <View style={styles.formBlock}>
-            {loginStep === "password" ? (
-              <Animated.View
-                style={[
-                  styles.stepWrap,
-                  {
-                    opacity: stepAnim,
-                    transform: [
-                      {
-                        translateX: stepAnim.interpolate({
-                          inputRange: [0, 1],
-                          outputRange: [18, 0]
-                        })
-                      }
-                    ]
-                  }
-                ]}
+          {authStep === "login_password" ? (
+            <>
+              <InputField label="Password" value={password} onChangeText={setPassword} secureTextEntry />
+              <Pressable style={styles.linkRow} onPress={() => setAuthStep("email")}>
+                <Text style={styles.linkText}>Use a different email</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.primaryButton, (isSubmitting || authStatus === "loading") && styles.primaryButtonDisabled]}
+                onPress={() => void handlePasswordLogin()}
+                disabled={isSubmitting || authStatus === "loading"}
               >
-                <InputField label="Password" value={password} onChangeText={setPassword} secureTextEntry />
-                <Pressable style={styles.linkRow} onPress={() => setLoginStep("email")}>
-                  <Text style={styles.linkText}>Use a different email</Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.primaryButton, (isSubmitting || authStatus === "loading") && styles.primaryButtonDisabled]}
-                  onPress={() => void handlePasswordLogin()}
-                  disabled={isSubmitting || authStatus === "loading"}
-                >
-                  <Text style={styles.primaryButtonText}>{isSubmitting ? "Logging in..." : "Log in"}</Text>
-                </Pressable>
-              </Animated.View>
-            ) : (
-              <Animated.View
-                style={[
-                  styles.stepWrap,
-                  {
-                    opacity: stepAnim.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [1, 0]
-                    }),
-                    transform: [
-                      {
-                        translateX: stepAnim.interpolate({
-                          inputRange: [0, 1],
-                          outputRange: [0, -18]
-                        })
-                      }
-                    ]
-                  }
-                ]}
+                <Text style={styles.primaryButtonText}>{isSubmitting ? "Logging in..." : "Log in"}</Text>
+              </Pressable>
+            </>
+          ) : null}
+
+          {authStep === "signup_password" ? (
+            <>
+              <InputField label="Create password" value={password} onChangeText={setPassword} secureTextEntry />
+              <InputField label="Retype password" value={signupPasswordConfirm} onChangeText={setSignupPasswordConfirm} secureTextEntry />
+              <Text style={styles.microcopy}>New account detected. Create a password to start onboarding.</Text>
+              <Pressable style={styles.linkRow} onPress={() => setAuthStep("email")}>
+                <Text style={styles.linkText}>Use a different email</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.primaryButton, (isSubmitting || authStatus === "loading") && styles.primaryButtonDisabled]}
+                onPress={() => void handleSignUp()}
+                disabled={isSubmitting || authStatus === "loading"}
               >
-                <InputField label="Email" value={email} onChangeText={setEmail} keyboardType="email-address" />
-                <Text style={styles.microcopy}>Continue with your email and then enter your password to log in.</Text>
-                <Pressable
-                  style={[styles.primaryButton, (isSubmitting || authStatus === "loading") && styles.primaryButtonDisabled]}
-                  onPress={() => void handleEmailContinue()}
-                  disabled={isSubmitting || authStatus === "loading"}
-                >
-                  <Text style={styles.primaryButtonText}>{isSubmitting ? "Loading..." : "Continue"}</Text>
-                </Pressable>
-              </Animated.View>
-            )}
-          </View>
-        ) : (
-          <View style={styles.formBlock}>
-            <InputField label="Email" value={email} onChangeText={setEmail} keyboardType="email-address" />
-            <Text style={styles.microcopy}>We&apos;ll send a secure sign-in link to your email. No password required.</Text>
-            <Pressable
-              style={[styles.primaryButton, (isSubmitting || authStatus === "loading") && styles.primaryButtonDisabled]}
-              onPress={() => void handleSendMagicLink()}
-              disabled={isSubmitting || authStatus === "loading"}
-            >
-              <Text style={styles.primaryButtonText}>{isSubmitting ? "Sending..." : "Send link"}</Text>
-            </Pressable>
-          </View>
-        )}
+                <Text style={styles.primaryButtonText}>{isSubmitting ? "Creating..." : "Create account"}</Text>
+              </Pressable>
+            </>
+          ) : null}
+        </View>
 
         {!supabaseEnabled ? <Text style={styles.hint}>Demo mode active until Supabase auth keys are configured.</Text> : null}
         {message ? <Text style={styles.message}>{message}</Text> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
-        <Text style={styles.trustLine}>You control your visibility. You can browse events without matching.</Text>
+        <Text style={styles.trustLine}>You control visibility, can browse events without matching, and can leave later by signing out or deleting your account.</Text>
       </ScrollView>
       </KeyboardAvoidingView>
     </View>
@@ -300,14 +296,6 @@ function Chip(props: { label: string }) {
     <View style={styles.benefitChip}>
       <Text style={styles.benefitChipText}>{props.label}</Text>
     </View>
-  );
-}
-
-function TabButton(props: { label: string; active: boolean; onPress: () => void }) {
-  return (
-    <Pressable style={[styles.tabButton, props.active && styles.tabButtonActive]} onPress={props.onPress}>
-      <Text style={[styles.tabButtonText, props.active && styles.tabButtonTextActive]}>{props.label}</Text>
-    </Pressable>
   );
 }
 
@@ -482,36 +470,7 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700"
   },
-  tabsRow: {
-    flexDirection: "row",
-    gap: 8,
-    marginTop: 2
-  },
-  tabButton: {
-    flex: 1,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.14)",
-    backgroundColor: "rgba(255,255,255,0.03)",
-    paddingVertical: 10,
-    alignItems: "center"
-  },
-  tabButtonActive: {
-    borderColor: "rgba(211,92,51,0.58)",
-    backgroundColor: "rgba(211,92,51,0.2)"
-  },
-  tabButtonText: {
-    color: "rgba(255,248,241,0.72)",
-    fontSize: 12,
-    fontWeight: "700"
-  },
-  tabButtonTextActive: {
-    color: "#FFF8EE"
-  },
   formBlock: {
-    gap: 10
-  },
-  stepWrap: {
     gap: 10
   },
   primaryButton: {

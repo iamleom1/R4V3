@@ -48,15 +48,43 @@ Deno.serve(async (req) => {
     }
 
     const row = Array.isArray(data) ? data[0] : data;
-    return json({
+    const payload = {
       ok: true,
       cutoffDays,
       deletedEvents: Number(row?.deleted_events ?? 0)
-    });
+    };
+    await recordJobRun(admin, "prune-events", "success", payload);
+    return json(payload);
   } catch (error) {
-    return json({ error: error instanceof Error ? error.message : "Unexpected server error." }, 500);
+    const message = error instanceof Error ? error.message : "Unexpected server error.";
+    try {
+      const supabaseUrl = Deno.env.get("SUPABASE_URL");
+      const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+      if (supabaseUrl && serviceRoleKey) {
+        const admin = createClient(supabaseUrl, serviceRoleKey, {
+          auth: { persistSession: false, autoRefreshToken: false }
+        });
+        await recordJobRun(admin, "prune-events", "failure", { error: message });
+      }
+    } catch {
+      // Do not mask the main error response.
+    }
+    return json({ error: message }, 500);
   }
 });
+
+async function recordJobRun(
+  admin: ReturnType<typeof createClient>,
+  jobName: string,
+  status: "success" | "failure",
+  details: Record<string, unknown>
+) {
+  await (admin.rpc as any)("record_job_run", {
+    p_job_name: jobName,
+    p_status: status,
+    p_details: details
+  });
+}
 
 function json(payload: unknown, status = 200) {
   return new Response(JSON.stringify(payload), {

@@ -1,5 +1,7 @@
 # App Store Metadata Draft
 
+Last updated: April 16, 2026
+
 ## App name
 
 R4V3
@@ -18,11 +20,11 @@ rave,edm,events,festival,crew,music,techno,house,concerts,community
 
 ## Support URL
 
-Replace with your public support page URL.
+Set this to the public support page before TestFlight/App Store submission.
 
 ## Privacy policy URL
 
-Replace with your hosted privacy policy URL.
+Set this to the hosted privacy policy URL before TestFlight/App Store submission.
 
 ## Suggested screenshot set
 

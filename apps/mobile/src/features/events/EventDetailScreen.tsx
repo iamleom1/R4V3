@@ -4,9 +4,11 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useAppState } from "../../app/AppProvider";
+import { RemoteImage } from "../../components/RemoteImage";
+import { toUserFacingError } from "../../lib/userFacingErrors";
 import { theme } from "../../theme";
 import type { EventRecord, RSVPStatus } from "../../types/domain";
-import { hasEventCrewChat, listEventAudienceMetrics } from "./eventRepository";
+import { hasEventCrewChat, joinEventCrewRoom, listEventAudienceMetrics, listEventCrewRooms, startEventCrewThreadSeed, type EventCrewRoom } from "./eventRepository";
 import type { DiscoverStackParamList } from "./DiscoverNavigator";
 import { useCrewVisibilityState } from "./useCrewVisibilityState";
 import { useEventRsvpState } from "./useEventRsvpState";
@@ -23,6 +25,8 @@ export function EventDetailScreen({ route, navigation }: Props) {
   const [isSaving, setIsSaving] = useState(false);
   const [goingCount, setGoingCount] = useState<number>(0);
   const [crewCountBase, setCrewCountBase] = useState<number>(0);
+  const [crewRooms, setCrewRooms] = useState<EventCrewRoom[]>([]);
+  const [isLoadingCrewRooms, setIsLoadingCrewRooms] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -51,6 +55,24 @@ export function EventDetailScreen({ route, navigation }: Props) {
       active = false;
     };
   }, [event.id, refreshRsvps]);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadCrewRooms() {
+      setIsLoadingCrewRooms(true);
+      const rooms = await listEventCrewRooms(event.id, session?.user?.id ?? null);
+      if (active) {
+        setCrewRooms(rooms);
+        setIsLoadingCrewRooms(false);
+      }
+    }
+
+    void loadCrewRooms();
+    return () => {
+      active = false;
+    };
+  }, [event.id, session?.user?.id]);
 
   const rsvpStatus = rsvps[event.id] ?? null;
   const lookingForCrew = rsvpStatus === "going" ? Boolean(visibility[event.id]) : false;
@@ -101,19 +123,68 @@ export function EventDetailScreen({ route, navigation }: Props) {
 
   async function persistRsvpChange(nextStatus: RSVPStatus) {
     if (session?.user?.id) {
-      setIsSaving(true);
-      setError(null);
-      const result = await setRsvp(event.id, nextStatus);
-      setIsSaving(false);
-      if (!result.ok) {
-        setError(result.error);
+      try {
+        setIsSaving(true);
+        setError(null);
+        const result = await setRsvp(event.id, nextStatus);
+        if (!result.ok) {
+          setError(result.error);
+          return;
+        }
+        const metrics = await listEventAudienceMetrics([event.id]);
+        const eventMetrics = metrics[event.id] ?? { goingCount: 0, lookingForCrewCount: 0 };
+        setGoingCount(eventMetrics.goingCount);
+        setCrewCountBase(eventMetrics.lookingForCrewCount);
+      } catch (error) {
+        setError(toUserFacingError(error, "Couldn’t update your RSVP."));
+      } finally {
+        setIsSaving(false);
+      }
+    }
+  }
+
+  async function handleCreateCrewRoom() {
+    if (!session?.user?.id) {
+      return;
+    }
+
+    setIsSaving(true);
+    const result = await startEventCrewThreadSeed(session.user.id, event.id);
+    setIsSaving(false);
+    if (!result.ok || !result.roomId) {
+      setError(result.ok ? "Failed to create crew group." : result.error);
+      return;
+    }
+
+    const rooms = await listEventCrewRooms(event.id, session.user.id);
+    setCrewRooms(rooms);
+    navigation.navigate("EventCrewRoom", {
+      roomId: result.roomId,
+      roomTitle: result.title,
+      eventTitle: event.title
+    });
+  }
+
+  async function handleOpenCrewRoom(room: EventCrewRoom) {
+    if (!session?.user?.id) {
+      return;
+    }
+
+    if (!room.isMember) {
+      const joinResult = await joinEventCrewRoom(room.id, session.user.id);
+      if (!joinResult.ok) {
+        setError(joinResult.error);
         return;
       }
-      const metrics = await listEventAudienceMetrics([event.id]);
-      const eventMetrics = metrics[event.id] ?? { goingCount: 0, lookingForCrewCount: 0 };
-      setGoingCount(eventMetrics.goingCount);
-      setCrewCountBase(eventMetrics.lookingForCrewCount);
+      const rooms = await listEventCrewRooms(event.id, session.user.id);
+      setCrewRooms(rooms);
     }
+
+    navigation.navigate("EventCrewRoom", {
+      roomId: room.id,
+      roomTitle: room.title,
+      eventTitle: event.title
+    });
   }
 
   return (
@@ -129,12 +200,14 @@ export function EventDetailScreen({ route, navigation }: Props) {
     >
       <View style={styles.posterShell}>
         <View style={[styles.posterHero, { backgroundColor: palette.base }]}>
-          <View style={[styles.posterGlowA, { backgroundColor: palette.glowA }]} />
-          <View style={[styles.posterGlowB, { backgroundColor: palette.glowB }]} />
-          <View style={[styles.posterBeamA, { backgroundColor: palette.lineA }]} />
-          <View style={[styles.posterBeamB, { backgroundColor: palette.lineB }]} />
-          <View style={[styles.posterBeamC, { backgroundColor: palette.lineC }]} />
-          <View style={styles.posterGrid} />
+          {event.flyerUrl ? <RemoteImage uri={event.flyerUrl} style={styles.posterFlyerImage} /> : null}
+          {event.flyerUrl ? <View style={styles.posterFlyerOverlay} /> : null}
+          {!event.flyerUrl ? <View style={[styles.posterGlowA, { backgroundColor: palette.glowA }]} /> : null}
+          {!event.flyerUrl ? <View style={[styles.posterGlowB, { backgroundColor: palette.glowB }]} /> : null}
+          {!event.flyerUrl ? <View style={[styles.posterBeamA, { backgroundColor: palette.lineA }]} /> : null}
+          {!event.flyerUrl ? <View style={[styles.posterBeamB, { backgroundColor: palette.lineB }]} /> : null}
+          {!event.flyerUrl ? <View style={[styles.posterBeamC, { backgroundColor: palette.lineC }]} /> : null}
+          {!event.flyerUrl ? <View style={styles.posterGrid} /> : null}
 
           <View style={styles.posterTopRow}>
             <View style={styles.posterTopLeft}>
@@ -225,6 +298,29 @@ export function EventDetailScreen({ route, navigation }: Props) {
               </View>
             ))}
           </View>
+        </View>
+      </View>
+
+      <View style={styles.section}>
+        <View style={styles.sectionHeaderRow}>
+          <Text style={styles.sectionTitle}>Crew Groups</Text>
+          <Pressable style={styles.sectionActionButton} onPress={() => void handleCreateCrewRoom()} disabled={!session?.user?.id || isSaving}>
+            <Text style={styles.sectionActionButtonText}>{isSaving ? "Creating..." : "Create Group"}</Text>
+          </Pressable>
+        </View>
+        <Text style={styles.sectionSupportText}>Create smaller group chats for solo ravers or existing friend groups going together.</Text>
+        <View style={styles.infoCard}>
+          {isLoadingCrewRooms ? <Text style={styles.cardStateText}>Loading groups...</Text> : null}
+          {!isLoadingCrewRooms && crewRooms.length === 0 ? <Text style={styles.cardStateText}>No crew groups yet. Start the first one.</Text> : null}
+          {crewRooms.map((room, index) => (
+            <Pressable key={room.id} style={[styles.crewRoomRow, index === crewRooms.length - 1 && styles.crewRoomRowLast]} onPress={() => void handleOpenCrewRoom(room)}>
+              <View style={styles.crewRoomTextBlock}>
+                <Text style={styles.crewRoomTitle}>{room.title}</Text>
+                <Text style={styles.crewRoomMeta}>{room.memberCount}/{room.sizeCap} members • {room.isMember ? "Joined" : "Tap to join"}</Text>
+              </View>
+              <Text style={styles.crewRoomChevron}>›</Text>
+            </Pressable>
+          ))}
         </View>
       </View>
 
@@ -331,6 +427,13 @@ const styles = StyleSheet.create({
     minHeight: 340,
     overflow: "hidden",
     padding: 14
+  },
+  posterFlyerImage: {
+    ...StyleSheet.absoluteFillObject
+  },
+  posterFlyerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.34)"
   },
   posterGrid: {
     position: "absolute",
@@ -577,12 +680,74 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "800"
   },
+  sectionHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10
+  },
+  sectionActionButton: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(211,92,51,0.26)",
+    backgroundColor: "rgba(211,92,51,0.12)",
+    paddingHorizontal: 12,
+    paddingVertical: 8
+  },
+  sectionActionButtonText: {
+    color: "#FFF8EE",
+    fontSize: 12,
+    fontWeight: "800"
+  },
+  sectionSupportText: {
+    color: "rgba(255,249,239,0.66)",
+    fontSize: 12,
+    lineHeight: 18
+  },
   infoCard: {
     borderRadius: 16,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
     backgroundColor: "rgba(255,255,255,0.02)",
     overflow: "hidden"
+  },
+  cardStateText: {
+    color: "rgba(255,249,239,0.72)",
+    fontSize: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 14
+  },
+  crewRoomRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255,255,255,0.04)"
+  },
+  crewRoomRowLast: {
+    borderBottomWidth: 0
+  },
+  crewRoomTextBlock: {
+    flex: 1,
+    gap: 2
+  },
+  crewRoomTitle: {
+    color: "#FFF8EE",
+    fontSize: 13,
+    fontWeight: "800"
+  },
+  crewRoomMeta: {
+    color: "rgba(255,249,239,0.64)",
+    fontSize: 11,
+    fontWeight: "600"
+  },
+  crewRoomChevron: {
+    color: "rgba(255,249,239,0.56)",
+    fontSize: 18,
+    fontWeight: "700"
   },
   infoRow: {
     flexDirection: "row",

@@ -33,7 +33,9 @@ export SUPABASE_SERVICE_ROLE_KEY="<service-role-key>"
 
 ```bash
 export EDM_SCRAPER_SOURCES="dice,posh"
-export POSH_LIMIT_PER_REGION="24"
+export POSH_LIMIT_PER_REGION="60"
+export POSH_WHENS="This Week,This Month"
+export DICE_REGIONS_JSON='[{"name":"Los Angeles County","city":"Los Angeles","browseUrl":"https://dice.fm/browse/losangeles-5982e13c613de866017c3e3a?lng=en-US"},{"name":"Orange County","city":"Orange County","browseUrl":"https://dice.fm/browse/<validated-orange-county-url>"},{"name":"San Diego County","city":"San Diego","browseUrl":"https://dice.fm/browse/<validated-san-diego-url>"}]'
 export DRY_RUN="false"
 ```
 
@@ -54,12 +56,12 @@ Expected output shape:
 ```json
 {
   "ok": true,
-  "fetched": 18,
-  "inserted": 12,
-  "updated": 6,
+  "fetched": 52,
+  "inserted": 34,
+  "updated": 18,
   "bySource": {
-    "dice": 7,
-    "posh": 11
+    "dice": 12,
+    "posh": 40
   }
 }
 ```
@@ -67,5 +69,6 @@ Expected output shape:
 ## Notes
 
 - Apply migration `0022_allow_posh_dice_event_sources.sql` before running the script against production.
-- The script filters to likely EDM/rave events using keyword matching.
-- Current DICE ingestion is configured for Los Angeles because that page exposes a stable server-rendered event payload.
+- The script filters to likely EDM/rave events using a weighted scorer over genre keywords, promoter hints, venue hints, and event-title hints.
+- POSH ingestion now covers Los Angeles County, Orange County, San Diego County, San Bernardino County, and Riverside County, and dedupes across multiple time windows so you can pull a broader inventory without duplicating records.
+- DICE region coverage is config-driven via `DICE_REGIONS_JSON`. Only the Los Angeles County browse URL is validated in-repo right now; additional county entries should use confirmed DICE browse URLs.

@@ -1,11 +1,13 @@
 import { getSupabaseClient } from "../../lib/supabase";
+import { toUserFacingError } from "../../lib/userFacingErrors";
 import type { SwipeDecision } from "../../types/domain";
-import { createEventConnection, listEventCandidatePreview, listSeededEventCandidatePreview, listUpcomingEvents } from "../events/eventRepository";
+import { createEventConnection, listEventCandidatePreview } from "../events/eventRepository";
 
 export type MatchCandidate = {
   id: string;
   name: string;
   age: number | null;
+  gender?: string | null;
   city: string;
   bio: string;
   vibeTags: string[];
@@ -23,11 +25,13 @@ export type MatchCandidate = {
   soberPreference?: "sober" | "non_sober" | "mixed" | null;
   connectionType?: "individual" | "group" | null;
   previousEvents?: string[];
+  profilePhotoUrl?: string | null;
 };
 
 type ViewerEventRow = {
   event_id: string;
   status: string;
+  looking_for_crew?: boolean | null;
   events: {
     id: string;
     title: string;
@@ -41,38 +45,30 @@ export async function listMatchStackCandidates(
 ): Promise<MatchCandidate[]> {
   const supabase = getSupabaseClient();
   if (!supabase) {
-    return [];
+    throw new Error("Supabase is not configured.");
   }
 
   const rsvpTable = supabase.from("event_rsvps") as any;
   const { data, error } = await rsvpTable
-    .select("event_id,status, events:event_id ( id, title )")
+    .select("event_id,status,looking_for_crew, events:event_id ( id, title )")
     .eq("profile_id", viewerProfileId)
     .eq("status", "going")
+    .eq("looking_for_crew", true)
     .limit(8);
 
   if (error || !Array.isArray(data)) {
-    return [];
+    throw new Error(error?.message ?? "Failed to load crew candidates.");
   }
 
   const viewerEvents = data as ViewerEventRow[];
   const candidates: MatchCandidate[] = [];
   const seenProfiles = new Set<string>();
-  const allEvents = await listUpcomingEvents(100);
-  const eventById = new Map(allEvents.map((event) => [event.id, event]));
-
   for (const row of viewerEvents) {
     if (!row.event_id || !row.events?.title) {
       continue;
     }
 
-    let previews = await listEventCandidatePreview(row.event_id, viewerProfileId, 8);
-    if (previews.length === 0) {
-      const event = eventById.get(row.event_id);
-      if (event) {
-        previews = await listSeededEventCandidatePreview(event, viewerProfileId, 8);
-      }
-    }
+    const previews = await listEventCandidatePreview(row.event_id, viewerProfileId, 8);
     for (const preview of previews) {
       if (seenProfiles.has(preview.profileId)) {
         continue;
@@ -82,9 +78,10 @@ export async function listMatchStackCandidates(
       candidates.push({
         id: preview.profileId,
         name: preview.displayName,
-        age: null,
+        age: preview.age ?? null,
+        gender: preview.gender ?? null,
         city: preview.city ?? "City hidden",
-        bio: "Community-first connection around shared events. Profile detail and photo gallery coming next.",
+        bio: preview.bio?.trim() || "No bio yet.",
         vibeTags: preview.vibeTags,
         eventId: row.event_id,
         eventName: row.events.title,
@@ -99,7 +96,8 @@ export async function listMatchStackCandidates(
         jobTitle: null,
         soberPreference: null,
         connectionType: "individual",
-        previousEvents: preview.distanceKm != null ? [`${Math.round(preview.distanceKm)} km away`] : []
+        previousEvents: preview.distanceKm != null ? [`${Math.round(preview.distanceKm)} km away`] : [],
+        profilePhotoUrl: preview.profilePhotoUrl ?? null
       });
 
       if (candidates.length >= limit) {
@@ -142,7 +140,7 @@ export async function createSwipeDecision(input: {
 
   const result = await createEventConnection(input.eventId!, input.targetProfileId);
   if (!result.ok) {
-    return { ok: false as const, error: result.error };
+    return { ok: false as const, error: toUserFacingError(result.error, "Couldn’t send that crew request.") };
   }
 
   return {

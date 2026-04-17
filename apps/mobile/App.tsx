@@ -1,12 +1,16 @@
-import React from "react";
-import { NavigationContainer, DefaultTheme } from "@react-navigation/native";
+import "react-native-gesture-handler";
+import React, { useEffect, useRef } from "react";
+import { NavigationContainer, DefaultTheme, createNavigationContainerRef } from "@react-navigation/native";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
+import * as Notifications from "expo-notifications";
 
 import { AppScreen } from "./src/components/AppScreen";
+import { AppErrorBoundary } from "./src/components/AppErrorBoundary";
 import { AppProvider, useAppState } from "./src/app/AppProvider";
 import { AuthScreen } from "./src/features/auth/AuthScreen";
 import { DiscoverNavigator } from "./src/features/events/DiscoverNavigator";
@@ -14,6 +18,8 @@ import { MatchesNavigator } from "./src/features/matches/MatchesNavigator";
 import { MessagesNavigator } from "./src/features/messages/MessagesNavigator";
 import { OnboardingScreen } from "./src/features/onboarding/OnboardingScreen";
 import { ProfileNavigator } from "./src/features/profile/ProfileNavigator";
+import { getPendingNotificationConversation } from "./src/lib/pushNotifications";
+import { trackEvent } from "./src/lib/telemetry";
 import { theme } from "./src/theme";
 
 type RootTabs = {
@@ -25,6 +31,8 @@ type RootTabs = {
 
 const Tab = createBottomTabNavigator<RootTabs>();
 const Stack = createNativeStackNavigator();
+const navigationRef = createNavigationContainerRef<any>();
+let lastTrackedScreen = "";
 
 const navTheme = {
   ...DefaultTheme,
@@ -206,18 +214,104 @@ function RootNavigator() {
   return <MainTabs />;
 }
 
+function NotificationCoordinator() {
+  const { authStatus, profileDraft } = useAppState();
+  const lastHandledResponseId = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (authStatus !== "authenticated" || !profileDraft.onboardingCompleted) {
+      return;
+    }
+
+    function openFromNotification(response: Notifications.NotificationResponse | null) {
+      if (!response) {
+        return;
+      }
+
+      const responseId = response.notification.request.identifier;
+      if (responseId && lastHandledResponseId.current === responseId) {
+        return;
+      }
+
+      const conversation = getPendingNotificationConversation(
+        response.notification.request.content.data as Record<string, unknown> | undefined
+      );
+      if (!conversation) {
+        return;
+      }
+
+      lastHandledResponseId.current = responseId;
+      const navigate = () =>
+        navigationRef.navigate("Messages", {
+          screen: "Conversation",
+          params: {
+            matchId: conversation.matchId,
+            title: conversation.title,
+            otherProfileId: conversation.otherProfileId
+          }
+        });
+
+      if (navigationRef.isReady()) {
+        navigate();
+      } else {
+        setTimeout(() => {
+          if (navigationRef.isReady()) {
+            navigate();
+          }
+        }, 400);
+      }
+    }
+
+    const subscription = Notifications.addNotificationResponseReceivedListener(openFromNotification);
+    void Notifications.getLastNotificationResponseAsync().then(openFromNotification);
+
+    return () => {
+      subscription.remove();
+    };
+  }, [authStatus, profileDraft.onboardingCompleted]);
+
+  return null;
+}
+
 export default function App() {
+  function handleNavigationStateChange() {
+    if (!navigationRef.isReady()) {
+      return;
+    }
+
+    const route = navigationRef.getCurrentRoute();
+    const screenName = route?.name ?? "";
+    if (!screenName || screenName === lastTrackedScreen) {
+      return;
+    }
+
+    lastTrackedScreen = screenName;
+    void trackEvent("screen_view", {
+      screen_name: screenName
+    });
+  }
+
   return (
-    <SafeAreaProvider>
-      <AppProvider>
-        <NavigationContainer theme={navTheme}>
-          <StatusBar style="light" />
-          <AppScreen>
-            <RootNavigator />
-          </AppScreen>
-        </NavigationContainer>
-      </AppProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={styles.gestureRoot}>
+      <SafeAreaProvider>
+        <AppProvider>
+          <AppErrorBoundary>
+            <NavigationContainer
+              ref={navigationRef}
+              theme={navTheme}
+              onReady={handleNavigationStateChange}
+              onStateChange={handleNavigationStateChange}
+            >
+              <StatusBar style="light" />
+              <AppScreen>
+                <RootNavigator />
+                <NotificationCoordinator />
+              </AppScreen>
+            </NavigationContainer>
+          </AppErrorBoundary>
+        </AppProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 
@@ -351,6 +445,9 @@ const tabIconStyles = StyleSheet.create({
 });
 
 const styles = StyleSheet.create({
+  gestureRoot: {
+    flex: 1
+  },
   bootGate: {
     flex: 1,
     backgroundColor: theme.colors.canvas,

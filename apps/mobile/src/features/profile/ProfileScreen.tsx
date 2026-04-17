@@ -1,11 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Image, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import Slider from "@react-native-community/slider";
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
+import { Picker } from "@react-native-picker/picker";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppState } from "../../app/AppProvider";
 import { Button } from "../../components/ui/Button";
 import { Chip } from "../../components/ui/Chip";
+import { RemoteImage } from "../../components/RemoteImage";
 import { theme } from "../../theme";
 import { captureCurrentDeviceLocation } from "./deviceLocationService";
 import { listProfilePhotos, type ProfilePhoto } from "./photoRepository";
@@ -23,6 +26,8 @@ const zodiacOptions = [
   "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"
 ];
 const heightOptions = buildHeightOptions();
+const MIN_AGE = 18;
+const MAX_AGE = 50;
 
 export function ProfileScreen() {
   const insets = useSafeAreaInsets();
@@ -32,10 +37,13 @@ export function ProfileScreen() {
   const [isCapturingLocation, setIsCapturingLocation] = useState(false);
   const scrollRef = useRef<ScrollView | null>(null);
   const [crewSignalsY, setCrewSignalsY] = useState(0);
+  const [bioSectionY, setBioSectionY] = useState(0);
+  const [crewSettingsY, setCrewSettingsY] = useState(0);
   const [showAllVibes, setShowAllVibes] = useState(false);
   const [showAllGenres, setShowAllGenres] = useState(false);
   const [activePicker, setActivePicker] = useState<null | "height" | "pronouns" | "gender" | "smoking" | "drinking">(null);
   const [isZodiacModalOpen, setIsZodiacModalOpen] = useState(false);
+  const [isInterestedGenderModalOpen, setIsInterestedGenderModalOpen] = useState(false);
   const [isModerator, setIsModerator] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [deleteConfirmationText, setDeleteConfirmationText] = useState("");
@@ -43,23 +51,26 @@ export function ProfileScreen() {
   const isNameLocked = profileDraft.onboardingCompleted && profileDraft.displayName.trim().length > 0;
   const isAgeLocked = profileDraft.onboardingCompleted && profileDraft.birthdate.trim().length > 0;
   const hasPhoto = photoSlots.some((slot) => Boolean(slot));
-  const hasShortBio = profileDraft.bio.trim().length >= 20;
-  const hasGenre = profileDraft.musicGenres.length > 0;
+  const hasShortBio = profileDraft.bio.trim().length > 0;
+  const hasEnoughVibes = profileDraft.vibeTags.length >= 1;
+  const hasEnoughGenres = profileDraft.musicGenres.length >= 1;
   const crewReadinessChecks = useMemo(
     () => ({
       photo: hasPhoto,
       bio: hasShortBio,
-      genre: hasGenre,
+      vibes: hasEnoughVibes,
+      genres: hasEnoughGenres,
       guidelines: profileDraft.guidelinesAccepted
     }),
-    [hasGenre, hasPhoto, hasShortBio, profileDraft.guidelinesAccepted]
+    [hasEnoughGenres, hasEnoughVibes, hasPhoto, hasShortBio, profileDraft.guidelinesAccepted]
   );
   const crewReadinessCount = Object.values(crewReadinessChecks).filter(Boolean).length;
-  const crewReadinessPct = Math.round((crewReadinessCount / 4) * 100);
+  const crewReadinessPct = Math.round((crewReadinessCount / 5) * 100);
+  const isCrewReadinessComplete = crewReadinessCount === 5;
   const crewReadinessLockedReason =
-    crewReadinessCount === 4
+    isCrewReadinessComplete
       ? null
-      : "Crew matching is locked until you add 1+ photo, a short bio, 1+ genre, and accept guidelines.";
+      : "Crew matching is locked until you add 1 photo, a bio, 1 vibe, 1 genre, and accept guidelines.";
 
   const ageText = useMemo(() => formatAgeFromBirthdate(profileDraft.birthdate), [profileDraft.birthdate]);
   const selectedZodiacSigns = useMemo(() => parseCsvList(profileDraft.zodiac), [profileDraft.zodiac]);
@@ -68,6 +79,33 @@ export function ProfileScreen() {
     [profileDraft.musicGenres, profileDraft.vibeTags]
   );
   const coverPhotoUrl = photoSlots[0]?.url ?? "";
+  const initials = useMemo(() => {
+    const text = profileDraft.displayName.trim();
+    if (!text) return "R4";
+    return text
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase() ?? "")
+      .join("");
+  }, [profileDraft.displayName]);
+  const visibleVibeOptions = useMemo(() => {
+    if (showAllVibes) return vibeOptions;
+    const selected = vibeOptions.filter((tag) => profileDraft.vibeTags.includes(tag));
+    const unselected = vibeOptions.filter((tag) => !profileDraft.vibeTags.includes(tag));
+    return [...selected, ...unselected].slice(0, 4);
+  }, [profileDraft.vibeTags, showAllVibes]);
+  const visibleGenreOptions = useMemo(() => {
+    if (showAllGenres) return genreOptions;
+    const selected = genreOptions.filter((tag) => profileDraft.musicGenres.includes(tag));
+    const unselected = genreOptions.filter((tag) => !profileDraft.musicGenres.includes(tag));
+    return [...selected, ...unselected].slice(0, 4);
+  }, [profileDraft.musicGenres, showAllGenres]);
+
+  useEffect(() => {
+    if (!isCrewReadinessComplete && profileDraft.communityModeEnabled) {
+      updateProfileDraft({ communityModeEnabled: false });
+    }
+  }, [isCrewReadinessComplete, profileDraft.communityModeEnabled, updateProfileDraft]);
 
   function toggleVibeTag(tag: string) {
     const next = profileDraft.vibeTags.includes(tag)
@@ -85,10 +123,10 @@ export function ProfileScreen() {
 
   function handleToggleOpenToCrewMatching() {
     const next = !profileDraft.communityModeEnabled;
-    if (next && crewReadinessCount < 4) {
+    if (next && !isCrewReadinessComplete) {
       Alert.alert(
         "Complete profile first",
-        "Add at least 1 photo, a short bio, 1+ genre, and accept guidelines before opening crew matching."
+        "Add 1 photo, a bio, 1 vibe, 1 genre, and accept guidelines before opening crew matching."
       );
       return;
     }
@@ -171,16 +209,6 @@ export function ProfileScreen() {
     });
   }
 
-  const initials = useMemo(() => {
-    const text = profileDraft.displayName.trim();
-    if (!text) return "R4";
-    return text
-      .split(/\s+/)
-      .slice(0, 2)
-      .map((part) => part[0]?.toUpperCase() ?? "")
-      .join("");
-  }, [profileDraft.displayName]);
-
   const activePickerConfig = useMemo(() => {
     if (!activePicker) return null;
     if (activePicker === "height") {
@@ -250,34 +278,59 @@ export function ProfileScreen() {
     Alert.alert("Account deleted", "Your account and related data were permanently removed.");
   }
 
+  function scrollTo(y: number) {
+    scrollRef.current?.scrollTo({ y: Math.max(y - 18, 0), animated: true });
+  }
+
+  function handleReadinessPress(target: "photo" | "bio" | "vibes" | "genres" | "guidelines") {
+    if (target === "photo") {
+      navigation.navigate("ProfilePhotos");
+      return;
+    }
+    if (target === "bio") {
+      scrollTo(bioSectionY);
+      return;
+    }
+    if (target === "vibes" || target === "genres") {
+      scrollTo(crewSignalsY);
+      if (target === "vibes") setShowAllVibes(true);
+      if (target === "genres") setShowAllGenres(true);
+      return;
+    }
+    scrollTo(crewSettingsY);
+  }
+
   return (
     <KeyboardAvoidingView
       style={styles.root}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
       keyboardVerticalOffset={Platform.OS === "ios" ? 12 : 0}
     >
-    <ScrollView
-      ref={scrollRef}
-      style={styles.scroll}
-      contentContainerStyle={[styles.container, { paddingTop: Math.max(insets.top + 8, 18), paddingBottom: Math.max(insets.bottom + 24, 28) }]}
-      showsVerticalScrollIndicator={false}
-      keyboardShouldPersistTaps="handled"
-      keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
-    >
-      <View style={styles.heroCard}>
-        <View style={styles.heroNoiseBand} />
-        <View style={styles.heroGridLineA} />
-        <View style={styles.heroGridLineB} />
+      <>
+        <ScrollView
+          ref={scrollRef}
+          style={styles.scroll}
+          contentContainerStyle={[styles.container, { paddingTop: Math.max(insets.top + 8, 18), paddingBottom: Math.max(insets.bottom + 24, 28) }]}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+        >
+          <View style={styles.heroCard}>
+            <View style={styles.heroNoiseBand} />
+            <View style={styles.heroGridLineA} />
+            <View style={styles.heroGridLineB} />
 
         <View style={styles.heroPassTop}>
           <View style={styles.heroPassStamp}>
-            {coverPhotoUrl ? <Image source={{ uri: coverPhotoUrl }} style={styles.heroCoverImage} /> : null}
-            <View style={styles.heroCoverOverlay} />
+            <View style={styles.heroAvatarFrame}>
+              {coverPhotoUrl ? <RemoteImage uri={coverPhotoUrl} style={styles.heroCoverImage} transition={0} /> : null}
+              <View style={styles.heroCoverOverlay} />
+              {!coverPhotoUrl ? <Text style={styles.heroPassStampValue}>{initials}</Text> : null}
+            </View>
             <Text style={styles.heroPassStampLabel}>R4V3</Text>
-            {!coverPhotoUrl ? <Text style={styles.heroPassStampValue}>{initials}</Text> : null}
           </View>
 
-          <View style={styles.heroPassMain}>
+          <View style={styles.heroHeaderMain}>
             <View style={styles.heroTagRow}>
               <View style={styles.heroTag}>
                 <Text style={styles.heroTagText}>IDENTITY</Text>
@@ -294,54 +347,61 @@ export function ProfileScreen() {
             <View style={styles.chipGrid}>
               {identityChips.length > 0 ? identityChips.map((tag) => <Chip key={`id-${tag}`} label={tag} selected />) : <Chip label="Add genres + vibes" />}
             </View>
-
-            <View style={styles.heroActionRow}>
-              <Pressable style={styles.heroActionButton} onPress={() => navigation.navigate("ProfilePhotos")}>
-                <Text style={styles.heroActionButtonText}>Edit Photos</Text>
-              </Pressable>
-              <Pressable style={styles.heroGhostButton} onPress={() => scrollRef.current?.scrollTo({ y: crewSignalsY, animated: true })}>
-                <Text style={styles.heroGhostButtonText}>Edit Profile</Text>
-              </Pressable>
-            </View>
           </View>
         </View>
 
         <View style={styles.progressModule}>
           <View style={styles.progressHeaderRow}>
-            <Text style={styles.progressLabel}>Crew Readiness</Text>
-            <Text style={styles.progressPct}>{crewReadinessPct}%</Text>
+            <View style={styles.progressCopy}>
+              <Text style={styles.progressLabel}>Crew Readiness</Text>
+              <Text style={styles.progressTitle}>{crewReadinessPct}% Complete</Text>
+              <Text style={styles.progressSubtitle}>Finish your profile to start matching</Text>
+            </View>
           </View>
           <View style={styles.progressTrack}>
             <View style={[styles.progressFill, { width: `${Math.max(6, crewReadinessPct)}%` }]} />
           </View>
-          <View style={styles.progressTicksRow}>
-            <View style={[styles.progressTick, crewReadinessChecks.photo && styles.progressTickOn]} />
-            <View style={[styles.progressTick, crewReadinessChecks.bio && styles.progressTickOn]} />
-            <View style={[styles.progressTick, crewReadinessChecks.genre && styles.progressTickOn]} />
-            <View style={[styles.progressTick, crewReadinessChecks.guidelines && styles.progressTickOn]} />
+          <View style={styles.readinessChecklist}>
+            <ReadinessItem label="Add 1 photo" complete={crewReadinessChecks.photo} onPress={() => handleReadinessPress("photo")} />
+            <ReadinessItem label="Add bio" complete={crewReadinessChecks.bio} onPress={() => handleReadinessPress("bio")} />
+            <ReadinessItem label="Pick 1 vibe" complete={crewReadinessChecks.vibes} onPress={() => handleReadinessPress("vibes")} />
+            <ReadinessItem label="Pick 1 genre" complete={crewReadinessChecks.genres} onPress={() => handleReadinessPress("genres")} />
+            <ReadinessItem label="Accept guidelines" complete={crewReadinessChecks.guidelines} onPress={() => handleReadinessPress("guidelines")} />
           </View>
-          <Text style={styles.panelFootnote}>
-            Add 1 photo • Add a short bio • Pick 3 vibes • Pick 2 genres • Accept guidelines
-          </Text>
+          <Pressable style={styles.photoEditCta} onPress={() => navigation.navigate("ProfilePhotos")}>
+            <View style={styles.photoEditCopy}>
+              <Text style={styles.photoEditTitle}>Edit Photos</Text>
+              <Text style={styles.photoEditSubtitle}>{photoSlots.filter(Boolean).length}/6 added</Text>
+            </View>
+            <Text style={styles.photoEditAction}>Manage</Text>
+          </Pressable>
+          {!isCrewReadinessComplete ? (
+            <Text style={styles.panelFootnote}>Finish your profile to enable crew discovery.</Text>
+          ) : null}
         </View>
 
-        <View style={styles.heroMetricsRow}>
-          <MiniStat label="Photos" value={`${photoSlots.filter(Boolean).length}/6`} />
-          <MiniStat label="Vibes" value={`${profileDraft.vibeTags.length}`} />
-          <MiniStat label="Genres" value={`${profileDraft.musicGenres.length}`} />
+        <View style={styles.heroActionRow}>
+          <Pressable style={styles.heroPrimaryButton} onPress={() => scrollTo(crewSignalsY)}>
+            <Text style={styles.heroPrimaryButtonText}>Complete Profile</Text>
+          </Pressable>
         </View>
       </View>
 
+      <View style={styles.heroMetricsRow}>
+        <MiniStat label="Photos" value={`${photoSlots.filter(Boolean).length}/6`} />
+        <MiniStat label="Vibes" value={`${profileDraft.vibeTags.length}`} />
+        <MiniStat label="Genres" value={`${profileDraft.musicGenres.length}`} />
+      </View>
       <View onLayout={(event) => setCrewSignalsY(event.nativeEvent.layout.y)} />
 
-      <Panel title="Crew Signals" subtitle="Core signals for event-based crew matching">
+      <Panel title="Crew Signals" subtitle="What you want your crew to feel like">
         <Text style={styles.infoSectionLabel}>Crew Vibes</Text>
         <View style={styles.chipGrid}>
-          {(showAllVibes ? vibeOptions : vibeOptions.slice(0, 6)).map((tag) => (
+          {visibleVibeOptions.map((tag) => (
             <Chip key={tag} label={tag} selected={profileDraft.vibeTags.includes(tag)} onPress={() => toggleVibeTag(tag)} />
           ))}
         </View>
-        {vibeOptions.length > 6 ? (
+        {vibeOptions.length > 4 ? (
           <Pressable style={styles.linkRow} onPress={() => setShowAllVibes((prev) => !prev)}>
             <Text style={styles.linkText}>{showAllVibes ? "Show less" : "Show more"}</Text>
           </Pressable>
@@ -349,11 +409,11 @@ export function ProfileScreen() {
 
         <Text style={styles.infoSectionLabel}>Genres</Text>
         <View style={styles.chipGrid}>
-          {(showAllGenres ? genreOptions : genreOptions.slice(0, 6)).map((tag) => (
+          {visibleGenreOptions.map((tag) => (
             <Chip key={tag} label={tag} selected={profileDraft.musicGenres.includes(tag)} onPress={() => toggleGenre(tag)} />
           ))}
         </View>
-        {genreOptions.length > 6 ? (
+        {genreOptions.length > 4 ? (
           <Pressable style={styles.linkRow} onPress={() => setShowAllGenres((prev) => !prev)}>
             <Text style={styles.linkText}>{showAllGenres ? "Show less" : "Show more"}</Text>
           </Pressable>
@@ -371,7 +431,7 @@ export function ProfileScreen() {
           ))}
         </View>
 
-        <View style={styles.bioBubbleCard}>
+        <View style={styles.bioBubbleCard} onLayout={(event) => setBioSectionY(event.nativeEvent.layout.y)}>
           <View style={styles.bioBubbleHeader}>
             <Text style={styles.bioBubbleTitle}>Bio</Text>
             <Text style={styles.bioBubbleMeta}>{profileDraft.bio.trim().length}/240</Text>
@@ -388,42 +448,103 @@ export function ProfileScreen() {
         </View>
       </Panel>
 
-      <Panel title="Basics" subtitle="Only what helps with safety and coordination">
+      <Panel title="Basics" subtitle="Just the essentials">
         <View style={styles.infoCardList}>
           <InfoReadOnlyRow
             label="Location"
-            value={profileDraft.city?.trim() ? `${profileDraft.city}${profileDraft.locationCapturedAt ? " (device)" : ""}` : "Location not captured yet"}
-            helper="Local discovery uses your device area."
+            value={`📍 ${profileDraft.city?.trim() || "Ontario"}`}
+            helper="Used for nearby events & crews"
           />
           <Button
-            label={isCapturingLocation ? "Capturing..." : "Use Current Location"}
+            label={isCapturingLocation ? "Updating..." : "Update Location"}
             onPress={() => void handleCaptureLocation()}
             disabled={isCapturingLocation}
+            variant="secondary"
           />
-          {profileDraft.locationCapturedAt ? (
-            <Text style={styles.panelFootnote}>
-              Last captured: {new Date(profileDraft.locationCapturedAt).toLocaleString()}
-              {typeof profileDraft.locationAccuracyMeters === "number" ? ` • ±${Math.round(profileDraft.locationAccuracyMeters)}m` : ""}
-            </Text>
-          ) : null}
         </View>
 
         <View style={styles.quickInfoGrid}>
           <QuickInfo label="First name" value={profileDraft.displayName || "Not set"} />
           <QuickInfo label="Age" value={ageText} />
         </View>
+        <View style={styles.infoCardList}>
+          <InfoSelectRow
+            label="Gender"
+            value={profileDraft.gender || "Not set"}
+            onPress={() => setActivePicker("gender")}
+          />
+        </View>
       </Panel>
 
-      <Panel title="Crew Discovery Settings" subtitle="Visibility controls for event-based matching">
+      <Panel title="Match Preferences" subtitle="Filter who appears in your stack">
+        <View style={styles.infoCardList}>
+          <InfoMultiSelectRow
+            label="Interested in"
+            value={profileDraft.interestedGenders.length > 0 ? profileDraft.interestedGenders.join(", ") : "Select gender preferences"}
+            helper="Only matching profiles will appear in your stack."
+            onPress={() => setIsInterestedGenderModalOpen(true)}
+          />
+          <View style={styles.ageRangeCard}>
+            <View style={styles.rangeHeader}>
+              <Text style={styles.infoSectionLabel}>Age range</Text>
+              <Text style={styles.rangeValue}>
+                {formatPreferenceAge(profileDraft.preferredAgeMin ?? 21)} - {formatPreferenceAge(profileDraft.preferredAgeMax ?? 35)}
+              </Text>
+            </View>
+            <View style={styles.sliderBlock}>
+              <Text style={styles.agePrefLabel}>Minimum age</Text>
+              <Slider
+                minimumValue={MIN_AGE}
+                maximumValue={MAX_AGE}
+                step={1}
+                minimumTrackTintColor={theme.colors.accent}
+                maximumTrackTintColor={theme.colors.border}
+                thumbTintColor={theme.colors.accent}
+                value={profileDraft.preferredAgeMin ?? 21}
+                onValueChange={(value) => {
+                  const nextMin = Math.round(value);
+                  updateProfileDraft({
+                    preferredAgeMin: nextMin,
+                    preferredAgeMax: Math.max(profileDraft.preferredAgeMax ?? nextMin, nextMin)
+                  });
+                }}
+              />
+            </View>
+            <View style={styles.sliderBlock}>
+              <Text style={styles.agePrefLabel}>Maximum age</Text>
+              <Slider
+                minimumValue={MIN_AGE}
+                maximumValue={MAX_AGE}
+                step={1}
+                minimumTrackTintColor={theme.colors.accent}
+                maximumTrackTintColor={theme.colors.border}
+                thumbTintColor={theme.colors.accent}
+                value={profileDraft.preferredAgeMax ?? 35}
+                onValueChange={(value) => {
+                  const nextMax = Math.round(value);
+                  updateProfileDraft({
+                    preferredAgeMax: nextMax,
+                    preferredAgeMin: Math.min(profileDraft.preferredAgeMin ?? nextMax, nextMax)
+                  });
+                }}
+              />
+            </View>
+          </View>
+        </View>
+      </Panel>
+
+      <View onLayout={(event) => setCrewSettingsY(event.nativeEvent.layout.y)}>
+      <Panel title="Crew Discovery" subtitle="Control when you show up">
         <ToggleRow
           label="Appear in Crew Discovery"
-          description="You’ll only appear for events you mark Going + enable Looking for Crew."
-          value={profileDraft.communityModeEnabled}
+          description={isCrewReadinessComplete ? "Shown when you opt into crewing for an event." : "Finish your profile to enable"}
+          value={isCrewReadinessComplete ? profileDraft.communityModeEnabled : false}
           onPress={handleToggleOpenToCrewMatching}
+          disabled={!isCrewReadinessComplete}
         />
         <ToggleRow
-          label="Community Guidelines Accepted"
-          description="Required to appear in crew discovery."
+          label="Guidelines Accepted"
+          description="Required for crew discovery."
           value={profileDraft.guidelinesAccepted}
           onPress={() => updateProfileDraft({ guidelinesAccepted: !profileDraft.guidelinesAccepted })}
         />
@@ -434,57 +555,79 @@ export function ProfileScreen() {
             onPress={() =>
               Alert.alert(
                 "Community Guidelines",
-                "Review and accept community guidelines in onboarding before turning on crew discovery."
+                "Accept the guidelines before turning on crew discovery."
               )
             }
           />
         ) : null}
       </Panel>
+      </View>
 
-      <Panel title="Save & Account" subtitle="Persist core profile fields when signed in">
-        {profileSaveStatus === "saving" ? (
-          <View style={styles.statusRow}>
-            <ActivityIndicator color={theme.colors.accent} />
-            <Text style={styles.statusText}>Saving profile...</Text>
-          </View>
-        ) : null}
-        {profileSaveStatus === "saved" ? <Text style={styles.successText}>Profile saved.</Text> : null}
-        {profileSaveError ? <Text style={styles.errorText}>{profileSaveError}</Text> : null}
-        {crewReadinessLockedReason ? <Text style={styles.panelFootnote}>{crewReadinessLockedReason}</Text> : null}
-        <Text style={styles.panelFootnote}>Sign out if you just need a break. Deleting your account permanently removes your profile, photos, RSVPs, matches, and messages.</Text>
+          <Panel title="Account">
+            {profileSaveStatus === "saving" ? (
+              <View style={styles.statusRow}>
+                <ActivityIndicator color={theme.colors.accent} />
+                <Text style={styles.statusText}>Saving profile...</Text>
+              </View>
+            ) : null}
+            {profileSaveStatus === "saved" ? <Text style={styles.successText}>Profile saved.</Text> : null}
+            {profileSaveError ? <Text style={styles.errorText}>{profileSaveError}</Text> : null}
+            {crewReadinessLockedReason ? <Text style={styles.panelFootnote}>Complete the checklist above to turn on crew discovery.</Text> : null}
 
-        <View style={styles.buttonStack}>
-          {isModerator ? (
-            <>
-              <Button label="Moderation Queue" variant="secondary" onPress={() => navigation.navigate("ModerationQueue")} />
-              <Button label="Analytics" variant="secondary" onPress={() => navigation.navigate("AdminAnalytics")} />
-              <Button label="Event Curation" variant="secondary" onPress={() => navigation.navigate("EventCuration")} />
-              <Button label="Scraper Status" variant="secondary" onPress={() => navigation.navigate("ScraperStatus")} />
-              <Button label="System Alerts" variant="secondary" onPress={() => navigation.navigate("SystemAlerts")} />
-            </>
-          ) : null}
-          <Button label="Save Profile" onPress={() => void saveProfileDraft()} />
-          <Button label="Sign Out" variant="ghost" onPress={() => void signOut()} />
-          <Button
-            label="Delete Account"
-            variant="ghost"
-            onPress={() => setIsDeleteModalOpen(true)}
+            <View style={styles.buttonStack}>
+              {isModerator ? (
+                <>
+                  <Button label="Moderation Queue" variant="secondary" onPress={() => navigation.navigate("ModerationQueue")} />
+                  <Button label="Analytics" variant="secondary" onPress={() => navigation.navigate("AdminAnalytics")} />
+                  <Button label="Event Curation" variant="secondary" onPress={() => navigation.navigate("EventCuration")} />
+                  <Button label="Scraper Status" variant="secondary" onPress={() => navigation.navigate("ScraperStatus")} />
+                  <Button label="System Alerts" variant="secondary" onPress={() => navigation.navigate("SystemAlerts")} />
+                </>
+              ) : null}
+              <Button label="Save Profile" onPress={() => void saveProfileDraft()} />
+              <Button label="Sign Out" variant="ghost" onPress={() => void signOut()} />
+              <Button label="Delete Account" variant="ghost" onPress={() => setIsDeleteModalOpen(true)} />
+            </View>
+          </Panel>
+        </ScrollView>
+        <DeleteAccountModal
+          visible={isDeleteModalOpen}
+          value={deleteConfirmationText}
+          isDeleting={isDeletingAccount}
+          onChangeText={setDeleteConfirmationText}
+          onClose={() => {
+            if (isDeletingAccount) return;
+            setDeleteConfirmationText("");
+            setIsDeleteModalOpen(false);
+          }}
+          onConfirm={() => void handleDeleteAccount()}
+        />
+        {activePickerConfig ? (
+          <OptionPickerModal
+            visible={Boolean(activePickerConfig)}
+            title={activePickerConfig.title}
+            options={activePickerConfig.options}
+            selectedValue={activePickerConfig.value}
+            onClose={() => setActivePicker(null)}
+            onSelect={activePickerConfig.onSelect}
           />
-        </View>
-      </Panel>
-    </ScrollView>
-    <DeleteAccountModal
-      visible={isDeleteModalOpen}
-      value={deleteConfirmationText}
-      isDeleting={isDeletingAccount}
-      onChangeText={setDeleteConfirmationText}
-      onClose={() => {
-        if (isDeletingAccount) return;
-        setDeleteConfirmationText("");
-        setIsDeleteModalOpen(false);
-      }}
-      onConfirm={() => void handleDeleteAccount()}
-    />
+        ) : null}
+        <MultiSelectModal
+          visible={isInterestedGenderModalOpen}
+          title="Interested in"
+          options={genderOptions}
+          selected={profileDraft.interestedGenders}
+          onClose={() => setIsInterestedGenderModalOpen(false)}
+          onToggle={(value) => {
+            const selected = profileDraft.interestedGenders.includes(value);
+            updateProfileDraft({
+              interestedGenders: selected
+                ? profileDraft.interestedGenders.filter((item) => item !== value)
+                : [...profileDraft.interestedGenders, value]
+            });
+          }}
+        />
+      </>
     </KeyboardAvoidingView>
   );
 }
@@ -507,6 +650,17 @@ function MiniStat(props: { label: string; value: string }) {
       <Text style={styles.miniStatValue}>{props.value}</Text>
       <Text style={styles.miniStatLabel}>{props.label}</Text>
     </View>
+  );
+}
+
+function ReadinessItem(props: { label: string; complete: boolean; onPress: () => void }) {
+  return (
+    <Pressable onPress={props.onPress} style={styles.readinessItem}>
+      <Text style={[styles.readinessIcon, props.complete ? styles.readinessIconComplete : styles.readinessIconIncomplete]}>
+        {props.complete ? "✔" : "✘"}
+      </Text>
+      <Text style={styles.readinessLabel}>{props.label}</Text>
+    </Pressable>
   );
 }
 
@@ -587,13 +741,49 @@ function OptionPickerModal(props: {
               <Text style={styles.modalCloseText}>Done</Text>
             </Pressable>
           </View>
+          <View style={styles.wheelPickerWrap}>
+            <Picker
+              selectedValue={props.selectedValue}
+              onValueChange={(value) => props.onSelect(String(value))}
+              itemStyle={styles.wheelPickerItem}
+            >
+              {props.options.map((option) => (
+                <Picker.Item key={option} label={option} value={option} />
+              ))}
+            </Picker>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function MultiSelectModal(props: {
+  visible: boolean;
+  title: string;
+  options: string[];
+  selected: string[];
+  onClose: () => void;
+  onToggle: (value: string) => void;
+}) {
+  return (
+    <Modal visible={props.visible} transparent animationType="slide" onRequestClose={props.onClose}>
+      <View style={styles.modalScrim}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={props.onClose} />
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>{props.title}</Text>
+            <Pressable onPress={props.onClose} style={styles.modalCloseBtn}>
+              <Text style={styles.modalCloseText}>Done</Text>
+            </Pressable>
+          </View>
           <ScrollView style={styles.modalOptionsList} contentContainerStyle={styles.modalOptionsContent}>
             {props.options.map((option) => {
-              const selected = option === props.selectedValue;
+              const selected = props.selected.includes(option);
               return (
                 <Pressable
                   key={option}
-                  onPress={() => props.onSelect(option)}
+                  onPress={() => props.onToggle(option)}
                   style={[styles.modalOptionRow, selected && styles.modalOptionRowSelected]}
                 >
                   <Text style={[styles.modalOptionText, selected && styles.modalOptionTextSelected]}>{option}</Text>
@@ -714,14 +904,14 @@ function FieldRow(props: {
   );
 }
 
-function ToggleRow(props: { label: string; description: string; value: boolean; onPress: () => void }) {
+function ToggleRow(props: { label: string; description: string; value: boolean; onPress: () => void; disabled?: boolean }) {
   return (
-    <Pressable onPress={props.onPress} style={styles.toggleRow}>
+    <Pressable onPress={props.onPress} disabled={props.disabled} style={[styles.toggleRow, props.disabled && styles.toggleRowDisabled]}>
       <View style={styles.toggleTextWrap}>
-        <Text style={styles.toggleLabel}>{props.label}</Text>
-        <Text style={styles.toggleDescription}>{props.description}</Text>
+        <Text style={[styles.toggleLabel, props.disabled && styles.toggleLabelDisabled]}>{props.label}</Text>
+        <Text style={[styles.toggleDescription, props.disabled && styles.toggleDescriptionDisabled]}>{props.description}</Text>
       </View>
-      <View style={[styles.toggleTrack, props.value && styles.toggleTrackOn]}>
+      <View style={[styles.toggleTrack, props.value && styles.toggleTrackOn, props.disabled && styles.toggleTrackDisabled]}>
         <View style={[styles.toggleThumb, props.value && styles.toggleThumbOn]} />
       </View>
     </Pressable>
@@ -739,16 +929,16 @@ const styles = StyleSheet.create({
   },
   container: {
     paddingHorizontal: 12,
-    gap: 10,
+    gap: 22,
     backgroundColor: "#11100D"
   },
   heroCard: {
     borderRadius: 22,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
+    borderColor: "rgba(255,255,255,0.035)",
     backgroundColor: "#100D0A",
-    padding: 14,
-    gap: 12,
+    padding: 15,
+    gap: 14,
     overflow: "hidden"
   },
   heroNoiseBand: {
@@ -782,17 +972,23 @@ const styles = StyleSheet.create({
   },
   heroPassTop: {
     flexDirection: "row",
-    gap: 12,
-    alignItems: "stretch"
+    gap: 10,
+    alignItems: "center"
   },
   heroPassStamp: {
-    width: 78,
-    borderRadius: 16,
+    width: 104,
+    alignItems: "center",
+    gap: 6
+  },
+  heroAvatarFrame: {
+    width: 104,
+    height: 104,
+    borderRadius: 52,
     borderWidth: 1,
     borderColor: "rgba(211,92,51,0.26)",
     backgroundColor: "rgba(211,92,51,0.06)",
-    padding: 10,
-    justifyContent: "space-between",
+    justifyContent: "center",
+    alignItems: "center",
     overflow: "hidden"
   },
   heroCoverImage: {
@@ -800,7 +996,7 @@ const styles = StyleSheet.create({
   },
   heroCoverOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.35)"
+    backgroundColor: "rgba(0,0,0,0.18)"
   },
   heroPassStampLabel: {
     color: "rgba(255,240,232,0.72)",
@@ -815,7 +1011,13 @@ const styles = StyleSheet.create({
   },
   heroPassMain: {
     flex: 1,
-    gap: 8
+    gap: 10
+  },
+  heroHeaderMain: {
+    flex: 1,
+    gap: 6,
+    justifyContent: "center",
+    paddingVertical: 2
   },
   heroTagRow: {
     flexDirection: "row",
@@ -846,14 +1048,13 @@ const styles = StyleSheet.create({
     fontWeight: "700"
   },
   heroActionRow: {
-    flexDirection: "row",
     gap: 8,
     marginTop: 2
   },
-  heroActionButton: {
+  heroPrimaryButton: {
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(211,92,51,0.32)",
+    borderColor: "rgba(211,92,51,0.26)",
     backgroundColor: "#C24A22",
     paddingHorizontal: 12,
     paddingVertical: 9,
@@ -862,60 +1063,94 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center"
   },
-  heroActionButtonText: {
+  heroPrimaryButtonText: {
     color: "#FFF8EE",
     fontWeight: "700",
     fontSize: 13
   },
-  heroGhostButton: {
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(255,255,255,0.03)",
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    minHeight: 38,
+  heroSecondaryLink: {
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center"
+    justifyContent: "space-between",
+    paddingHorizontal: 2,
+    minHeight: 22
   },
-  heroGhostButtonText: {
-    color: "#EDE2D2",
+  heroSecondaryLinkLabel: {
+    color: "rgba(255,249,239,0.76)",
+    fontSize: 13,
+    fontWeight: "600"
+  },
+  heroSecondaryLinkAction: {
+    color: "#FFD4C4",
     fontWeight: "700",
     fontSize: 13
+  },
+  photoEditCta: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(211,92,51,0.24)",
+    backgroundColor: "rgba(211,92,51,0.08)",
+    paddingHorizontal: 12,
+    paddingVertical: 10
+  },
+  photoEditCopy: {
+    gap: 2
+  },
+  photoEditTitle: {
+    color: "#FFF8EE",
+    fontSize: 14,
+    fontWeight: "800"
+  },
+  photoEditSubtitle: {
+    color: "rgba(255,249,239,0.62)",
+    fontSize: 12
+  },
+  photoEditAction: {
+    color: "#FFD4C4",
+    fontSize: 13,
+    fontWeight: "800"
   },
   heroTitle: {
     color: "#FFF8EE",
     ...theme.type.titleLg,
-    fontSize: 18
+    fontSize: 17
   },
   heroSubtitle: {
     color: "rgba(255,249,239,0.68)",
     fontSize: 12,
-    lineHeight: 17
+    lineHeight: 16
   },
   progressModule: {
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.05)",
+    borderColor: "rgba(255,255,255,0.03)",
     backgroundColor: "rgba(255,255,255,0.02)",
-    padding: 10,
+    padding: 12,
     gap: 8
   },
   progressHeaderRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
     gap: 8
   },
+  progressCopy: {
+    gap: 2
+  },
   progressLabel: {
-    color: "rgba(255,249,239,0.68)",
-    fontSize: 11,
+    color: "rgba(255,249,239,0.7)",
+    fontSize: 12,
     fontWeight: "700"
   },
-  progressPct: {
-    color: "#FFD4C4",
-    fontSize: 11,
+  progressTitle: {
+    color: "#FFF8EE",
+    fontSize: 16,
     fontWeight: "800"
+  },
+  progressSubtitle: {
+    color: "rgba(255,249,239,0.62)",
+    fontSize: 12,
+    lineHeight: 17
   },
   progressTrack: {
     height: 7,
@@ -928,30 +1163,40 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: "#D35C33"
   },
-  progressTicksRow: {
-    flexDirection: "row",
+  readinessChecklist: {
     gap: 6
   },
-  progressTick: {
-    flex: 1,
-    height: 3,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.06)"
+  readinessItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8
   },
-  progressTickOn: {
-    backgroundColor: "rgba(211,92,51,0.6)"
+  readinessIcon: {
+    fontSize: 12,
+    fontWeight: "800"
+  },
+  readinessIconComplete: {
+    color: "#B9F0C8"
+  },
+  readinessIconIncomplete: {
+    color: "#FF9F9F"
+  },
+  readinessLabel: {
+    color: "#FFF8EE",
+    fontSize: 13,
+    fontWeight: "600"
   },
   heroMetricsRow: {
     flexDirection: "row",
-    gap: 8
+    gap: 10
   },
   miniStat: {
     flex: 1,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.04)",
+    borderColor: "rgba(255,255,255,0.03)",
     backgroundColor: "#12100C",
-    paddingVertical: 9,
+    paddingVertical: 11,
     alignItems: "center",
     justifyContent: "center"
   },
@@ -969,16 +1214,16 @@ const styles = StyleSheet.create({
   quickInfoGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8
+    gap: 10
   },
   quickInfoTile: {
     width: "48.5%",
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
+    borderColor: "rgba(255,255,255,0.04)",
     backgroundColor: "rgba(255,255,255,0.02)",
-    padding: 10,
-    gap: 4
+    padding: 11,
+    gap: 5
   },
   quickInfoLabel: {
     color: "rgba(255,249,239,0.55)",
@@ -996,24 +1241,24 @@ const styles = StyleSheet.create({
   panel: {
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.05)",
+    borderColor: "rgba(255,255,255,0.035)",
     backgroundColor: "#0F0D0A",
-    padding: 14,
-    gap: 12,
+    padding: 15,
+    gap: 15,
     overflow: "hidden"
   },
   panelHeader: {
     gap: 4
   },
   panelTitle: {
-    color: "#FFF8EE",
-    fontSize: 16,
+    color: "#FFFDF8",
+    fontSize: 18,
     fontWeight: "800"
   },
   panelSubtitle: {
-    color: "rgba(255,249,239,0.62)",
+    color: "rgba(255,249,239,0.6)",
     fontSize: 12,
-    lineHeight: 17
+    lineHeight: 16
   },
   infoSectionLabel: {
     color: "#FFF8EE",
@@ -1022,16 +1267,49 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2
   },
   infoCardList: {
-    gap: 10
+    gap: 12
+  },
+  chipCloud: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8
+  },
+  ageRangeCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.04)",
+    backgroundColor: "#14110D",
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    gap: 12
+  },
+  rangeHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12
+  },
+  rangeValue: {
+    color: "#FFF8EE",
+    fontSize: 14,
+    fontWeight: "700"
+  },
+  sliderBlock: {
+    gap: 8
+  },
+  agePrefLabel: {
+    color: "rgba(255,249,239,0.56)",
+    fontSize: 12,
+    fontWeight: "600"
   },
   infoRowCard: {
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: "rgba(255,255,255,0.04)",
     backgroundColor: "#14110D",
     paddingHorizontal: 14,
-    paddingVertical: 12,
-    gap: 4
+    paddingVertical: 13,
+    gap: 5
   },
   infoRowHeaderLine: {
     flexDirection: "row",
@@ -1114,6 +1392,16 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 8
   },
+  wheelPickerWrap: {
+    margin: 12,
+    borderRadius: 16,
+    overflow: "hidden",
+    backgroundColor: "#14110D"
+  },
+  wheelPickerItem: {
+    color: "#FFF8EE",
+    fontSize: 20
+  },
   deleteModalBody: {
     padding: 14,
     gap: 12
@@ -1194,15 +1482,15 @@ const styles = StyleSheet.create({
     fontWeight: "700"
   },
   panelBody: {
-    gap: 10
+    gap: 14
   },
   bioBubbleCard: {
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: "rgba(211,92,51,0.16)",
+    borderColor: "rgba(211,92,51,0.1)",
     backgroundColor: "#120E0A",
-    padding: 12,
-    gap: 8
+    padding: 13,
+    gap: 9
   },
   bioBubbleHeader: {
     flexDirection: "row",
@@ -1224,7 +1512,7 @@ const styles = StyleSheet.create({
     minHeight: 88,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
+    borderColor: "rgba(255,255,255,0.05)",
     backgroundColor: "rgba(255,255,255,0.02)",
     color: "#FFF8EE",
     paddingHorizontal: 12,
@@ -1263,7 +1551,7 @@ const styles = StyleSheet.create({
     lineHeight: 22
   },
   panelFootnote: {
-    color: "rgba(255,249,239,0.56)",
+    color: "rgba(255,249,239,0.52)",
     fontSize: 11,
     lineHeight: 16
   },
@@ -1373,18 +1661,21 @@ const styles = StyleSheet.create({
   chipGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8
+    gap: 9
   },
   toggleRow: {
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: "rgba(255,255,255,0.04)",
     backgroundColor: "#221D16",
-    padding: 12,
+    padding: 13,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10
+  },
+  toggleRowDisabled: {
+    opacity: 0.72
   },
   toggleTextWrap: {
     flex: 1,
@@ -1394,9 +1685,15 @@ const styles = StyleSheet.create({
     color: "#FFF8EE",
     fontWeight: "700"
   },
+  toggleLabelDisabled: {
+    color: "rgba(255,249,239,0.78)"
+  },
   toggleDescription: {
     color: "rgba(255,249,239,0.6)",
     fontSize: 12
+  },
+  toggleDescriptionDisabled: {
+    color: "rgba(255,249,239,0.52)"
   },
   toggleTrack: {
     width: 48,
@@ -1408,6 +1705,9 @@ const styles = StyleSheet.create({
   },
   toggleTrackOn: {
     backgroundColor: "#C24A22"
+  },
+  toggleTrackDisabled: {
+    backgroundColor: "#53493D"
   },
   toggleThumb: {
     width: 22,
@@ -1462,6 +1762,10 @@ function formatAgeFromBirthdate(birthdate: string) {
     age -= 1;
   }
   return age >= 0 ? `${age}` : "Invalid birthdate";
+}
+
+function formatPreferenceAge(value: number) {
+  return value >= MAX_AGE ? `${MAX_AGE}+` : String(value);
 }
 
 function parseCsvList(value: string) {
