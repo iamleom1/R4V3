@@ -5,7 +5,7 @@ const supabase = createClient(requireEnv("SUPABASE_URL"), requireEnv("SUPABASE_S
   auth: { persistSession: false, autoRefreshToken: false }
 });
 
-const MAX_RUN_AGE_HOURS = clampInteger(process.env.EDM_HEALTHCHECK_MAX_RUN_AGE_HOURS, 8, 1, 168);
+const MAX_RUN_AGE_HOURS = clampInteger(process.env.EDM_HEALTHCHECK_MAX_RUN_AGE_HOURS, 30, 1, 168);
 const MIN_FETCHED_EVENTS = clampInteger(process.env.EDM_HEALTHCHECK_MIN_FETCHED, 4, 0, 1000);
 const MIN_POSH_UPCOMING = clampInteger(process.env.EDM_HEALTHCHECK_MIN_POSH_UPCOMING, 2, 0, 1000);
 const MIN_DICE_UPCOMING = clampInteger(process.env.EDM_HEALTHCHECK_MIN_DICE_UPCOMING, 1, 0, 1000);

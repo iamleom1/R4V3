@@ -19,7 +19,31 @@ jest.mock("expo-notifications", () => ({
   }
 }));
 
+jest.mock("expo-location", () => ({
+  requestForegroundPermissionsAsync: jest.fn(async () => ({ status: "granted", granted: true })),
+  getCurrentPositionAsync: jest.fn(async () => ({
+    coords: {
+      latitude: 34.0522,
+      longitude: -118.2437,
+      accuracy: 50
+    }
+  })),
+  reverseGeocodeAsync: jest.fn(async () => [{ city: "Los Angeles", region: "CA", country: "United States" }]),
+  Accuracy: {
+    Balanced: 3
+  }
+}));
+
 jest.mock("@react-native-community/datetimepicker", () => "DateTimePicker");
+
+jest.mock("@react-native-community/slider", () => {
+  const React = require("react");
+  const { View } = require("react-native");
+
+  return function MockSlider() {
+    return React.createElement(View, { testID: "mock-slider" });
+  };
+});
 
 jest.mock("expo-status-bar", () => ({
   StatusBar: () => null

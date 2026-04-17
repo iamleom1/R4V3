@@ -33,7 +33,7 @@ describe("OnboardingScreen", () => {
     const screen = render(<OnboardingScreen />);
 
     expect(screen.getByText("Build your profile with intent")).toBeOnTheScreen();
-    expect(screen.getByText("Step 1 of 3: Identity")).toBeOnTheScreen();
+    expect(screen.getByText("Step 1 of 4: Identity")).toBeOnTheScreen();
     expect(screen.getByText("Next")).toBeOnTheScreen();
   });
 
@@ -54,6 +54,6 @@ describe("OnboardingScreen", () => {
     const screen = render(<OnboardingScreen />);
     fireEvent.press(screen.getByText("Next"));
 
-    expect(screen.getByText("Step 2 of 3: Preferences")).toBeOnTheScreen();
+    expect(screen.getByText("Step 2 of 4: Vibe + Music")).toBeOnTheScreen();
   });
 });

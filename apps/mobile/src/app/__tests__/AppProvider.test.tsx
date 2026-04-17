@@ -47,6 +47,7 @@ function Harness(props: { onDone: (snapshot: { ok: boolean }) => void }) {
       displayName: "Leo",
       birthdate: "1995-04-20",
       city: "Los Angeles",
+      gender: "Man",
       bio: "House and techno. Down for pregame and sticking with the crew.",
       vibeTags: ["House", "Festival Crew", "Afters"],
       musicGenres: ["EDM", "Tech House"],

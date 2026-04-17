@@ -1,17 +1,26 @@
 # EDM Operations
 
-## External scheduler
+This document covers the external Node-based EDM scraper pipeline for `dice.fm` and `posh.vip`.
 
-This repo now includes GitHub Actions workflows for the EDM scraper jobs:
+## What runs where
 
-- `/.github/workflows/edm-ingest.yml`
+- Ingest script: [scripts/ingest-edm-events.mjs](/Users/iamleom/Desktop/R4V3/scripts/ingest-edm-events.mjs)
+- Healthcheck script: [scripts/healthcheck-edm-ingest.mjs](/Users/iamleom/Desktop/R4V3/scripts/healthcheck-edm-ingest.mjs)
+- Wrapper/logger: [scripts/run-edm-job.mjs](/Users/iamleom/Desktop/R4V3/scripts/run-edm-job.mjs)
+- Scheduled workflows:
+  - [.github/workflows/edm-ingest.yml](/Users/iamleom/Desktop/R4V3/.github/workflows/edm-ingest.yml)
+  - [.github/workflows/edm-healthcheck.yml](/Users/iamleom/Desktop/R4V3/.github/workflows/edm-healthcheck.yml)
+
+These jobs are intentionally outside Supabase and write into Supabase using the service-role key.
+
+## GitHub workflow cadence
+
+- `edm-ingest.yml`
   - runs `pnpm run:edm:ingest`
-  - cadence: every 6 hours
-- `/.github/workflows/edm-healthcheck.yml`
+  - current cron: `0 13 * * *`
+- `edm-healthcheck.yml`
   - runs `pnpm run:edm:healthcheck`
-  - cadence: every hour
-
-These jobs are intentionally outside Supabase.
+  - current cron: `0 * * * *`
 
 ## Required GitHub secrets
 
@@ -33,14 +42,22 @@ Set these as Actions Variables if you want to tune sensitivity:
 - `EDM_HEALTHCHECK_MIN_FETCHED`
 - `EDM_HEALTHCHECK_MIN_POSH_UPCOMING`
 - `EDM_HEALTHCHECK_MIN_DICE_UPCOMING`
+- `EDM_HEALTHCHECK_MIN_POSH_FETCHED_PER_RUN`
+- `EDM_HEALTHCHECK_MIN_DICE_FETCHED_PER_RUN`
+- `EDM_HEALTHCHECK_MAX_DUPLICATES`
+- `EDM_HEALTHCHECK_MAX_BAD_EVENTS`
 
 Recommended starting values:
 
 ```text
-EDM_HEALTHCHECK_MAX_RUN_AGE_HOURS=8
+EDM_HEALTHCHECK_MAX_RUN_AGE_HOURS=30
 EDM_HEALTHCHECK_MIN_FETCHED=4
 EDM_HEALTHCHECK_MIN_POSH_UPCOMING=2
 EDM_HEALTHCHECK_MIN_DICE_UPCOMING=1
+EDM_HEALTHCHECK_MIN_POSH_FETCHED_PER_RUN=1
+EDM_HEALTHCHECK_MIN_DICE_FETCHED_PER_RUN=1
+EDM_HEALTHCHECK_MAX_DUPLICATES=0
+EDM_HEALTHCHECK_MAX_BAD_EVENTS=0
 ```
 
 ## Log retention
@@ -64,6 +81,15 @@ pnpm run:edm:ingest
 pnpm run:edm:healthcheck
 ```
 
+Or use the wrapper that writes timestamped log and metadata files under `logs/edm`:
+
+```bash
+pnpm run:edm:ingest
+pnpm run:edm:healthcheck
+```
+
+The root scripts already route through [scripts/run-edm-job.mjs](/Users/iamleom/Desktop/R4V3/scripts/run-edm-job.mjs).
+
 ## After adding GitHub remote
 
 1. Push this repo to GitHub.
@@ -73,3 +99,8 @@ pnpm run:edm:healthcheck
    - ingest writes `job_runs` rows for `ingest-edm-events`
    - healthcheck creates alerts when thresholds are crossed
    - Slack/email notifications arrive when configured
+
+## Related docs
+
+- Scraper ingestion details: [docs/edm-scraper-ingestion.md](/Users/iamleom/Desktop/R4V3/docs/edm-scraper-ingestion.md)
+- Supabase Ticketmaster ingestion: [docs/backend-event-ingestion.md](/Users/iamleom/Desktop/R4V3/docs/backend-event-ingestion.md)

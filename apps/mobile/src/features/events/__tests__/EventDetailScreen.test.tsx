@@ -37,15 +37,15 @@ jest.mock("../musicPreview", () => ({
 jest.mock("../useEventRsvpState", () => ({
   useEventRsvpState: () => ({
     rsvps: mockRsvpMap,
-    setRsvp: (...args: unknown[]) => mockSetRsvp(...args),
-    refreshRsvps: (...args: unknown[]) => mockRefreshRsvps(...args)
+    setRsvp: mockSetRsvp,
+    refreshRsvps: mockRefreshRsvps
   })
 }));
 
 jest.mock("../useCrewVisibilityState", () => ({
   useCrewVisibilityState: () => ({
     visibility: mockVisibilityMap,
-    setLooking: (...args: unknown[]) => mockSetLooking(...args)
+    setLooking: mockSetLooking
   })
 }));
 
@@ -114,6 +114,7 @@ describe("EventDetailScreen", () => {
 
     await waitFor(() => {
       expect(mockListEventAudienceMetrics).toHaveBeenCalledWith(["event-1"]);
+      expect(mockListEventCrewRooms).toHaveBeenCalledWith("event-1", "user-1");
       expect(screen.getByText("I'm Going")).toBeOnTheScreen();
     });
 
@@ -141,6 +142,7 @@ describe("EventDetailScreen", () => {
     );
 
     await waitFor(() => {
+      expect(mockListEventCrewRooms).toHaveBeenCalledWith("event-1", "user-1");
       expect(screen.getByText("Leave Event")).toBeOnTheScreen();
     });
 

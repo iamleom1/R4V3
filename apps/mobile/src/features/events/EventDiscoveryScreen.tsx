@@ -91,6 +91,8 @@ const DISCOVER_SORT_GROUPS: Array<{ title: string; options: Array<{ key: Discove
 
 const RUNTIME_CITY_CENTERS: Record<string, { lat: number; lng: number }> = {};
 const RUNTIME_CITY_CENTER_MISSES = new Set<string>();
+const LOS_ANGELES_CENTER = { lat: 34.0522, lng: -118.2437 };
+const LA_FALLBACK_MIN_RESULTS = 18;
 
 export function EventDiscoveryScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
@@ -138,14 +140,36 @@ export function EventDiscoveryScreen({ navigation }: Props) {
     const genreFiltered =
       selectedGenre === "All" ? events : events.filter((event) => eventMatchesGenre(event, selectedGenre));
 
-    if (!viewerLocation || selectedRadiusMiles === null) {
+    if (!viewerLocation) {
+      return genreFiltered.filter((event) => {
+        const distance = getEventDistanceMiles(event, LOS_ANGELES_CENTER);
+        return distance !== null && distance <= 100;
+      });
+    }
+
+    if (selectedRadiusMiles === null) {
       return genreFiltered;
     }
 
-    return genreFiltered.filter((event) => {
+    const nearby = genreFiltered.filter((event) => {
       const distance = getEventDistanceMiles(event, viewerLocation);
       return distance !== null && distance <= selectedRadiusMiles;
     });
+
+    if (nearby.length >= LA_FALLBACK_MIN_RESULTS) {
+      return nearby;
+    }
+
+    const nearbyIds = new Set(nearby.map((event) => event.id));
+    const laFallback = genreFiltered.filter((event) => {
+      if (nearbyIds.has(event.id)) {
+        return false;
+      }
+      const distance = getEventDistanceMiles(event, LOS_ANGELES_CENTER);
+      return distance !== null && distance <= 100;
+    });
+
+    return [...nearby, ...laFallback];
   }, [events, selectedGenre, selectedRadiusMiles, viewerLocation]);
   const rankedFilteredEvents = useMemo(() => {
     return [...filteredEvents].sort((a, b) =>
@@ -174,19 +198,19 @@ export function EventDiscoveryScreen({ navigation }: Props) {
   }, [rankedFilteredEvents, stableRankedEventIds]);
   const citySearchSummary = useMemo(() => {
     if (!viewerLocation) {
-      return "Set your location to choose a radius";
+      return "Showing Los Angeles events by default.";
     }
     return `Showing events within ${selectedRadiusMiles} miles of your location.`;
   }, [selectedRadiusMiles, viewerLocation]);
   const activeLocationTitle = useMemo(() => {
     if (!viewerLocation) {
-      return "Location";
+      return "Los Angeles • Default";
     }
     return `Current Location • ${selectedRadiusMiles} mi`;
   }, [selectedRadiusMiles, viewerLocation]);
   const activeLocationMeta = useMemo(() => {
     if (!viewerLocation) {
-      return "Location not set";
+      return `${filteredEvents.length} LA events`;
     }
     return `${filteredEvents.length} in range`;
   }, [filteredEvents.length, selectedRadiusMiles, viewerLocation]);
@@ -1098,9 +1122,9 @@ export function EventDiscoveryScreen({ navigation }: Props) {
                   <View style={styles.citySelectorField}>
                     <View style={styles.citySelectorCopy}>
                       <Text style={styles.citySelectorEyebrow}>📍 Current location</Text>
-                      <Text style={styles.citySelectorValue}>{viewerLocation ? viewerLocationLabel : "Location not set"}</Text>
+                      <Text style={styles.citySelectorValue}>{viewerLocation ? viewerLocationLabel : "Los Angeles"}</Text>
                       {!viewerLocation ? (
-                        <Text style={styles.citySelectorSupportingText}>Find events near your current location</Text>
+                        <Text style={styles.citySelectorSupportingText}>Showing Los Angeles events by default</Text>
                       ) : null}
                     </View>
                   </View>

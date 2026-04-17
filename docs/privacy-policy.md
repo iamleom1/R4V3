@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Last updated: March 17, 2026
+Last updated: April 16, 2026
 
 ## Overview
 
@@ -56,4 +56,4 @@ Users can delete their account in-app from the Profile screen. Support can also 
 
 ## Contact
 
-Support contact: replace-with-your-support-email@example.com
+Support contact is provided through the app support channel or public support page listed with the product release.
