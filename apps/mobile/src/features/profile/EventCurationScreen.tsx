@@ -29,6 +29,7 @@ type Draft = {
   featuredUntil: string;
   curationNote: string;
   flyerUrl: string;
+  isHidden: boolean;
 };
 
 const emptyDraft: Draft = {
@@ -43,7 +44,8 @@ const emptyDraft: Draft = {
   promotionRank: "0",
   featuredUntil: "",
   curationNote: "",
-  flyerUrl: ""
+  flyerUrl: "",
+  isHidden: false
 };
 
 export function EventCurationScreen() {
@@ -87,7 +89,8 @@ export function EventCurationScreen() {
       promotionRank: String(event.promotionRank ?? 0),
       featuredUntil: event.featuredUntil ? toLocalInputValue(event.featuredUntil) : "",
       curationNote: event.curationNote ?? "",
-      flyerUrl: event.flyerUrl ?? ""
+      flyerUrl: event.flyerUrl ?? "",
+      isHidden: event.isHidden
     });
   }
 
@@ -128,7 +131,8 @@ export function EventCurationScreen() {
       promotionRank,
       featuredUntil,
       curationNote: draft.curationNote.trim() || null,
-      flyerUrl: draft.flyerUrl.trim() || null
+      flyerUrl: draft.flyerUrl.trim() || null,
+      isHidden: draft.isHidden
     });
     setIsSaving(false);
 
@@ -225,6 +229,19 @@ export function EventCurationScreen() {
           />
         </View>
 
+        <View style={styles.toggleRow}>
+          <View style={styles.toggleCopy}>
+            <Text style={styles.toggleLabel}>Hide from discovery</Text>
+            <Text style={styles.toggleMeta}>Hidden events stay in admin curation but are excluded from the main event page.</Text>
+          </View>
+          <Switch
+            value={draft.isHidden}
+            onValueChange={(isHidden) => setDraft((prev) => ({ ...prev, isHidden }))}
+            trackColor={{ false: "rgba(255,255,255,0.2)", true: theme.colors.accent }}
+            thumbColor="#fff"
+          />
+        </View>
+
         <LabeledField label="Internal Note">
           <TextInput value={draft.curationNote} onChangeText={(curationNote) => setDraft((prev) => ({ ...prev, curationNote }))} style={[styles.input, styles.noteInput]} placeholder="Why is this being promoted?" placeholderTextColor={theme.colors.textSecondary} multiline />
         </LabeledField>
@@ -256,6 +273,11 @@ export function EventCurationScreen() {
               <View style={styles.badge}>
                 <Text style={styles.badgeText}>{event.sourcePrimary}</Text>
               </View>
+              {event.isHidden ? (
+                <View style={[styles.badge, styles.badgeHidden]}>
+                  <Text style={styles.badgeText}>Hidden</Text>
+                </View>
+              ) : null}
             </View>
             <Text style={styles.rankText}>Rank {event.promotionRank}</Text>
           </View>
@@ -479,6 +501,10 @@ const styles = StyleSheet.create({
   badgeFeatured: {
     borderColor: theme.colors.accent,
     backgroundColor: theme.colors.accentSoft
+  },
+  badgeHidden: {
+    borderColor: "#FFB454",
+    backgroundColor: "rgba(255,180,84,0.16)"
   },
   badgeText: {
     color: theme.colors.textPrimary,
