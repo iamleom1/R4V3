@@ -225,6 +225,7 @@ export function EventDiscoveryScreen({ navigation }: Props) {
     const index = RADIUS_OPTIONS.findIndex((option) => option.value === selectedRadiusMiles);
     return index >= 0 ? index : 1;
   }, [selectedRadiusMiles]);
+  const weekendEvents = useMemo(() => getClosestWeekendEvents(events, audienceMetrics, viewerLocation), [audienceMetrics, events, viewerLocation]);
   const featuredEvents = useMemo(
     () =>
       rankedFilteredEvents
@@ -233,7 +234,6 @@ export function EventDiscoveryScreen({ navigation }: Props) {
         .slice(0, 6),
     [rankedFilteredEvents, viewerLocation]
   );
-  const weekendEvents = useMemo(() => getClosestWeekendEvents(events, audienceMetrics, viewerLocation), [audienceMetrics, events, viewerLocation]);
   const weekendCarouselEvents = useMemo(
     () => (weekendEvents.length > 1 ? [...weekendEvents, weekendEvents[0]] : weekendEvents),
     [weekendEvents]
@@ -288,7 +288,7 @@ export function EventDiscoveryScreen({ navigation }: Props) {
 
       try {
         const nextOffset = reset ? 0 : loadedEventCountRef.current;
-        const eventRows = await listUpcomingEvents(DISCOVER_PAGE_SIZE, nextOffset);
+        const eventRows = await listUpcomingEvents(reset ? null : DISCOVER_PAGE_SIZE, nextOffset);
         setEvents((prev) => {
           if (reset) {
             return eventRows;
@@ -300,7 +300,7 @@ export function EventDiscoveryScreen({ navigation }: Props) {
           return Array.from(merged.values());
         });
         loadedEventCountRef.current = reset ? eventRows.length : loadedEventCountRef.current + eventRows.length;
-        const nextHasMore = eventRows.length === DISCOVER_PAGE_SIZE;
+        const nextHasMore = reset ? false : eventRows.length === DISCOVER_PAGE_SIZE;
         hasMoreEventsRef.current = nextHasMore;
         setHasMoreEvents(nextHasMore);
         lastEventDiscoveryFetchAtRef.current = Date.now();

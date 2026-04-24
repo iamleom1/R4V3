@@ -20,6 +20,7 @@ type EventRow = {
   curation_note: string | null;
   flyer_url: string | null;
   music_preview_url: string | null;
+  is_hidden?: boolean | null;
 };
 
 type EventRsvpRow = {
@@ -106,11 +107,7 @@ export async function listUpcomingEvents(limit: number | null = DEFAULT_DISCOVER
 
       while (true) {
         const to = from + DISCOVERY_ALL_PAGE_SIZE - 1;
-        const { data, error } = await eventsTable
-          .select("id,title,venue_name,city,starts_at,ends_at,genre_tags,source_primary,is_featured,promotion_rank,featured_until,curation_note,flyer_url,music_preview_url")
-          .gte("starts_at", windowStart.toISOString())
-          .order("starts_at", { ascending: true })
-          .range(from, to);
+        const { data, error } = await fetchDiscoveryEventRows(eventsTable, windowStart.toISOString(), from, to);
 
         if (error || !Array.isArray(data) || data.length === 0) {
           break;
@@ -131,11 +128,7 @@ export async function listUpcomingEvents(limit: number | null = DEFAULT_DISCOVER
 
       while (true) {
         const to = from + DISCOVERY_ALL_PAGE_SIZE - 1;
-        const { data, error } = await eventsTable
-          .select("id,title,venue_name,city,starts_at,ends_at,genre_tags,source_primary,is_featured,promotion_rank,featured_until,curation_note,flyer_url,music_preview_url")
-          .gte("starts_at", windowStart.toISOString())
-          .order("starts_at", { ascending: true })
-          .range(from, to);
+        const { data, error } = await fetchDiscoveryEventRows(eventsTable, windowStart.toISOString(), from, to);
 
         if (error || !Array.isArray(data) || data.length === 0) {
           break;
@@ -144,7 +137,7 @@ export async function listUpcomingEvents(limit: number | null = DEFAULT_DISCOVER
         mergedCandidates.push(...data.map(mapEventRow));
         loadedFromSupabase = true;
 
-        const uniqueLoadedCount = dedupeAndRankEvents(mergedCandidates).filter(shouldShowDiscoveryEvent).length;
+        const uniqueLoadedCount = dedupeAndRankEvents(mergedCandidates).length;
         if (uniqueLoadedCount >= targetUniqueCount || data.length < DISCOVERY_ALL_PAGE_SIZE) {
           break;
         }
@@ -161,8 +154,39 @@ export async function listUpcomingEvents(limit: number | null = DEFAULT_DISCOVER
     }
   }
 
-  const rankedEvents = dedupeAndRankEvents(mergedCandidates).filter(shouldShowDiscoveryEvent);
+  const rankedEvents = dedupeAndRankEvents(mergedCandidates);
   return requestLimit === null ? rankedEvents : rankedEvents.slice(requestOffset, requestOffset + requestLimit);
+}
+
+async function fetchDiscoveryEventRows(eventsTable: any, windowStartIso: string, from: number, to: number) {
+  const selectClause =
+    "id,title,venue_name,city,starts_at,ends_at,genre_tags,source_primary,is_featured,promotion_rank,featured_until,curation_note,flyer_url,music_preview_url,is_hidden";
+
+  const primaryResult = await eventsTable
+    .select(selectClause)
+    .gte("starts_at", windowStartIso)
+    .eq("is_hidden", false)
+    .order("starts_at", { ascending: true })
+    .range(from, to);
+
+  if (!isMissingHiddenColumnError(primaryResult.error)) {
+    return primaryResult;
+  }
+
+  const fallbackResult = await eventsTable
+    .select(selectClause)
+    .gte("starts_at", windowStartIso)
+    .order("starts_at", { ascending: true })
+    .range(from, to);
+
+  if (!Array.isArray(fallbackResult.data)) {
+    return fallbackResult;
+  }
+
+  return {
+    ...fallbackResult,
+    data: fallbackResult.data.filter((row: EventRow) => !row.is_hidden)
+  };
 }
 
 export async function listMyEventRsvps(profileId: string): Promise<Record<string, RSVPStatus>> {
@@ -967,6 +991,16 @@ function mapEventRow(row: EventRow): EventRecord {
   };
 }
 
+function isMissingHiddenColumnError(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const maybeMessage = "message" in error ? error.message : null;
+  const maybeCode = "code" in error ? error.code : null;
+  return maybeCode === "42703" && typeof maybeMessage === "string" && maybeMessage.includes("is_hidden");
+}
+
 function isUuidLike(value: string | null | undefined) {
   if (!value) return false;
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
@@ -1335,23 +1369,112 @@ function dedupeAndRankEvents(events: EventRecord[]) {
   const deduped = new Map<string, EventRecord>();
 
   for (const event of events) {
-    const key = getEventDedupKey(event);
-    const existing = deduped.get(key);
-    if (!existing || compareEventPriority(event, existing) < 0) {
-      deduped.set(key, event);
+    const keys = getEventDedupKeys(event);
+    let matchedKey: string | null = null;
+    let existing: EventRecord | undefined;
+
+    for (const key of keys) {
+      const candidate = deduped.get(key);
+      if (candidate) {
+        matchedKey = key;
+        existing = candidate;
+        break;
+      }
+    }
+
+    if (!existing) {
+      for (const key of keys) {
+        deduped.set(key, event);
+      }
+      continue;
+    }
+
+    const preferred = compareEventPriority(event, existing) < 0 ? event : existing;
+    const secondary = preferred === event ? existing : event;
+    const merged = mergeDuplicateEvents(preferred, secondary);
+    const mergedKeys = Array.from(new Set([...(matchedKey ? [matchedKey] : []), ...getEventDedupKeys(existing), ...keys]));
+    for (const key of mergedKeys) {
+      deduped.set(key, merged);
     }
   }
 
-  return Array.from(deduped.values()).sort((a, b) => compareEventPriority(a, b));
+  return Array.from(new Map(Array.from(deduped.values()).map((event) => [event.id, event])).values()).sort((a, b) => compareEventPriority(a, b));
 }
 
-function getEventDedupKey(event: EventRecord) {
-  const startsAt = new Date(event.startsAt);
-  const dayKey = Number.isNaN(startsAt.getTime()) ? event.startsAt : startsAt.toISOString().slice(0, 10);
-  const normalizedTitle = event.title.trim().toLowerCase().replace(/\s+/g, " ");
-  const normalizedVenue = (event.venueName ?? "").trim().toLowerCase().replace(/\s+/g, " ");
-  const normalizedCity = (event.city ?? "").trim().toLowerCase().replace(/\s+/g, " ");
-  return `${normalizedTitle}|${normalizedVenue}|${normalizedCity}|${dayKey}`;
+function getEventDedupKeys(event: EventRecord) {
+  const dayKey = getEventDayKey(event.startsAt);
+  const timeBucket = getEventTimeBucket(event.startsAt);
+  const normalizedTitle = normalizeEventTitle(event.title);
+  const normalizedVenue = normalizeVenueName(event.venueName);
+  const normalizedCity = normalizeEventToken(event.city);
+  const titleCityKey = `${normalizedTitle}|${normalizedCity}|${dayKey}`;
+  const titleVenueKey = normalizedVenue ? `${normalizedTitle}|${normalizedVenue}|${dayKey}` : null;
+  const titleTimeKey = timeBucket !== null ? `${normalizedTitle}|${normalizedCity}|${timeBucket}` : null;
+  return [titleVenueKey, titleTimeKey, titleCityKey].filter(Boolean) as string[];
+}
+
+function mergeDuplicateEvents(primary: EventRecord, duplicate: EventRecord): EventRecord {
+  return {
+    ...primary,
+    endsAt: primary.endsAt ?? duplicate.endsAt ?? null,
+    genreTags: mergeTags(primary.genreTags, duplicate.genreTags),
+    curationNote: primary.curationNote ?? duplicate.curationNote ?? null,
+    flyerUrl: primary.flyerUrl ?? duplicate.flyerUrl ?? null,
+    musicPreviewUrl: primary.musicPreviewUrl ?? duplicate.musicPreviewUrl ?? null
+  };
+}
+
+function mergeTags(primary?: string[], duplicate?: string[]) {
+  const merged = [...(primary ?? []), ...(duplicate ?? [])]
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+  return Array.from(new Set(merged));
+}
+
+function getEventDayKey(startsAt: string) {
+  const parsed = new Date(startsAt);
+  return Number.isNaN(parsed.getTime()) ? startsAt : parsed.toISOString().slice(0, 10);
+}
+
+function getEventTimeBucket(startsAt: string) {
+  const parsed = new Date(startsAt);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  const bucketMs = 1000 * 60 * 60 * 4;
+  return Math.floor(parsed.getTime() / bucketMs);
+}
+
+function normalizeEventTitle(title: string) {
+  const normalized = normalizeEventToken(title)
+    .replace(/\b(ft|feat|featuring)\b/g, "")
+    .replace(/\b(presents|presented by|pres\.)\b/g, "")
+    .replace(/\b(official|tickets|rsvp|entry)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return normalized;
+}
+
+function normalizeVenueName(value: string | null | undefined) {
+  const normalized = normalizeEventToken(value)
+    .replace(/\b(nightclub|club|theater|theatre|venue|hall|center|centre|arena|stadium)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return normalized;
+}
+
+function normalizeEventToken(value: string | null | undefined) {
+  return (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[’']/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function compareEventPriority(a: EventRecord, b: EventRecord) {

@@ -14,6 +14,7 @@ export type CuratedEvent = {
   featuredUntil: string | null;
   curationNote: string | null;
   flyerUrl: string | null;
+  isHidden: boolean;
 };
 
 type CuratedEventRow = {
@@ -30,6 +31,7 @@ type CuratedEventRow = {
   featured_until: string | null;
   curation_note: string | null;
   flyer_url: string | null;
+  is_hidden: boolean;
 };
 
 export async function listCuratedEvents(includePast = false) {
@@ -60,7 +62,8 @@ export async function listCuratedEvents(includePast = false) {
     promotionRank: Number(row.promotion_rank ?? 0),
     featuredUntil: row.featured_until,
     curationNote: row.curation_note,
-    flyerUrl: row.flyer_url
+    flyerUrl: row.flyer_url,
+    isHidden: Boolean(row.is_hidden)
   }));
 }
 
@@ -78,6 +81,7 @@ export async function upsertCuratedEvent(input: {
   featuredUntil?: string | null;
   curationNote?: string | null;
   flyerUrl?: string | null;
+  isHidden?: boolean;
 }) {
   const supabase = getSupabaseClient();
   if (!supabase) {
@@ -99,7 +103,8 @@ export async function upsertCuratedEvent(input: {
     p_promotion_rank: input.promotionRank,
     p_featured_until: input.featuredUntil ?? null,
     p_curation_note: input.curationNote ?? null,
-    p_flyer_url: input.flyerUrl ?? null
+    p_flyer_url: input.flyerUrl ?? null,
+    p_is_hidden: input.isHidden ?? false
   });
 
   const row = Array.isArray(data) ? data[0] : data;

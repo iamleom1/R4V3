@@ -75,7 +75,22 @@ Expected response shape:
 
 ## Suggested scheduling
 
-If you want Ticketmaster ingestion to run inside Supabase, schedule `ingest-events` in the Supabase Dashboard:
+Run Ticketmaster ingestion every 12 hours. This repo now includes a GitHub Actions workflow at [.github/workflows/ticketmaster-ingest.yml](/Users/iamleom/Desktop/R4V3/.github/workflows/ticketmaster-ingest.yml) that POSTs to the `ingest-events` Edge Function on that cadence.
+
+Required GitHub secret:
+
+- `EVENT_INGEST_CRON_SECRET`
+
+Optional GitHub variables:
+
+- `TICKETMASTER_INGEST_CITY`
+- `TICKETMASTER_INGEST_COUNTRY_CODE`
+- `TICKETMASTER_INGEST_DAYS_AHEAD`
+- `TICKETMASTER_INGEST_SIZE`
+- `TICKETMASTER_INGEST_RADIUS_MILES`
+- `TICKETMASTER_INGEST_KEYWORD`
+
+If you prefer to schedule inside Supabase instead, configure the function with the same 12-hour cadence:
 
 1. Go to `Functions` -> `ingest-events` -> `Schedule`.
 2. Use `POST`.
@@ -87,7 +102,7 @@ If you want Ticketmaster ingestion to run inside Supabase, schedule `ingest-even
 {"city":"Los Angeles","daysAhead":30,"size":80,"radiusMiles":80}
 ```
 
-Daily cadence is the practical default.
+Recommended cadence: every 12 hours.
 
 ## Notes
 

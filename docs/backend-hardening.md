@@ -106,9 +106,10 @@ The mobile app now emits:
 
 ## Recommended schedules
 
-1. `ingest-events`: every 24 hours
-2. `prune-events`: once daily
-3. `ops-monitor`: every hour
+1. `ingest-events`: every 12 hours
+2. `ingest-edm-events`: every 12 hours
+3. `prune-events`: once daily
+4. `ops-monitor`: every hour
 
 ## Related docs
 
