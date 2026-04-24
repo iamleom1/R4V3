@@ -1194,16 +1194,18 @@ function scoreTicketmasterImage(image: NonNullable<TicketmasterEvent["images"]>[
   return score;
 }
 
-const EDM_DISCOVERY_KEYWORDS = [
-  "edm",
-  "rave",
-  "dance/electronic",
+const TICKETMASTER_ALLOWED_GENRE_KEYWORDS = [
+  "afters",
+  "afterhours",
   "house",
   "tech house",
   "progressive house",
   "afro house",
+  "deep house",
+  "minimal house",
   "techno",
   "melodic techno",
+  "hard techno",
   "dubstep",
   "drum and bass",
   "dnb",
@@ -1211,33 +1213,19 @@ const EDM_DISCOVERY_KEYWORDS = [
   "hardstyle",
   "bass",
   "future bass",
-  "trap",
   "uk garage",
   "garage",
-  "breakbeat",
-  "afterhours",
+  "breakbeat"
+];
+
+const TICKETMASTER_ALLOWED_TITLE_KEYWORDS = [
   "afters",
+  "afterhours",
   "all night long",
   "open to close",
-  "b2b"
-];
-
-const TICKETMASTER_CROSSOVER_KEYWORDS = [
-  "reggaeton"
-];
-
-const TICKETMASTER_PARTY_CONTEXT_KEYWORDS = [
-  "rave",
-  "party",
-  "club",
-  "night",
-  "dj",
-  "festival",
-  "warehouse",
-  "afters",
-  "afterhours",
-  "all night long",
-  "open to close"
+  "b2b",
+  "warehouse rave",
+  "rave"
 ];
 
 const NON_EDM_EXCLUSION_KEYWORDS = [
@@ -1294,24 +1282,20 @@ const DEFAULT_SOCAL_TICKETMASTER_CITIES = [
 
 function isEdmOrRaveEvent(event: EventRecord) {
   const haystack = buildDiscoverySearchText(event);
-  if (EDM_DISCOVERY_KEYWORDS.some((keyword) => haystack.includes(keyword))) {
-    return true;
-  }
-
-  const hasCrossover = TICKETMASTER_CROSSOVER_KEYWORDS.some((keyword) => haystack.includes(keyword));
-  const hasPartyContext = TICKETMASTER_PARTY_CONTEXT_KEYWORDS.some((keyword) => haystack.includes(keyword));
-  return hasCrossover && hasPartyContext;
+  const genreMatch = TICKETMASTER_ALLOWED_GENRE_KEYWORDS.some((keyword) => haystack.includes(keyword));
+  const titleMatch = TICKETMASTER_ALLOWED_TITLE_KEYWORDS.some((keyword) => haystack.includes(keyword));
+  return genreMatch || titleMatch;
 }
 
 function scoreTicketmasterEvent(event: EventRecord) {
   const haystack = buildDiscoverySearchText(event);
   let score = 0;
-  for (const keyword of EDM_DISCOVERY_KEYWORDS) {
+  for (const keyword of TICKETMASTER_ALLOWED_GENRE_KEYWORDS) {
     if (haystack.includes(keyword)) score += 10;
   }
-  if (haystack.includes("dance/electronic")) score += 12;
-  if (TICKETMASTER_CROSSOVER_KEYWORDS.some((keyword) => haystack.includes(keyword))) score += 4;
-  if (TICKETMASTER_PARTY_CONTEXT_KEYWORDS.some((keyword) => haystack.includes(keyword))) score += 3;
+  for (const keyword of TICKETMASTER_ALLOWED_TITLE_KEYWORDS) {
+    if (haystack.includes(keyword)) score += 8;
+  }
   return score;
 }
 

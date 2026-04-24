@@ -9,6 +9,13 @@ type TicketmasterClassification = {
 type TicketmasterEvent = {
   id?: string;
   name?: string;
+  images?: Array<{
+    url?: string;
+    width?: number;
+    height?: number;
+    ratio?: string;
+    fallback?: boolean;
+  }>;
   dates?: {
     start?: {
       dateTime?: string;
@@ -37,6 +44,7 @@ type EventInsert = {
   starts_at: string;
   genre_tags: string[];
   source_primary: "ticketmaster";
+  flyer_url: string | null;
 };
 
 const DEFAULT_SOCAL_TICKETMASTER_CITIES = [
@@ -196,7 +204,8 @@ Deno.serve(async (req) => {
           country: row.country,
           starts_at: row.starts_at,
           genre_tags: row.genre_tags,
-          source_primary: row.source_primary
+          source_primary: row.source_primary,
+          flyer_url: row.flyer_url
         })
         .eq("id", row.id);
 
@@ -215,7 +224,8 @@ Deno.serve(async (req) => {
         country: row.country,
         starts_at: row.starts_at,
         genre_tags: row.genre_tags,
-        source_primary: row.source_primary
+        source_primary: row.source_primary,
+        flyer_url: row.flyer_url
       }));
 
       const { data: insertedEvents, error: insertEventsError } = await (admin.from("events") as any)
@@ -343,7 +353,8 @@ function mapTicketmasterEvent(event: TicketmasterEvent): { providerEventId: stri
       country: venue?.country?.countryCode?.trim() || null,
       starts_at: startsAt,
       genre_tags: genreTags,
-      source_primary: "ticketmaster"
+      source_primary: "ticketmaster",
+      flyer_url: extractTicketmasterFlyerUrl(event)
     },
     raw: event
   };
@@ -385,18 +396,46 @@ function deriveGenres(event: TicketmasterEvent) {
   return Array.from(tags).slice(0, 8);
 }
 
-const EDM_DISCOVERY_KEYWORDS = [
-  "edm",
-  "rave",
-  "electronic",
-  "dance/electronic",
-  "dj",
+function extractTicketmasterFlyerUrl(event: TicketmasterEvent) {
+  const images = Array.isArray(event.images) ? event.images : [];
+  if (images.length === 0) {
+    return null;
+  }
+
+  const ranked = [...images]
+    .filter((image) => typeof image?.url === "string" && image.url.trim())
+    .sort((a, b) => scoreTicketmasterImage(b) - scoreTicketmasterImage(a));
+
+  return ranked[0]?.url?.trim() ?? null;
+}
+
+function scoreTicketmasterImage(image: NonNullable<TicketmasterEvent["images"]>[number]) {
+  const ratio = image.ratio?.trim().toLowerCase() ?? "";
+  const width = typeof image.width === "number" ? image.width : 0;
+  const height = typeof image.height === "number" ? image.height : 0;
+  const areaScore = width * height;
+
+  let score = areaScore;
+  if (ratio === "3_2") score += 5_000_000;
+  else if (ratio === "16_9") score += 4_000_000;
+  else if (ratio === "4_3") score += 3_000_000;
+  if (image.fallback) score -= 500_000;
+
+  return score;
+}
+
+const TICKETMASTER_ALLOWED_GENRE_KEYWORDS = [
+  "afters",
+  "afterhours",
   "house",
   "tech house",
   "progressive house",
   "afro house",
+  "deep house",
+  "minimal house",
   "techno",
   "melodic techno",
+  "hard techno",
   "dubstep",
   "drum and bass",
   "dnb",
@@ -404,11 +443,19 @@ const EDM_DISCOVERY_KEYWORDS = [
   "hardstyle",
   "bass",
   "future bass",
-  "trap",
   "uk garage",
   "garage",
-  "breakbeat",
-  "electro"
+  "breakbeat"
+];
+
+const TICKETMASTER_ALLOWED_TITLE_KEYWORDS = [
+  "afters",
+  "afterhours",
+  "all night long",
+  "open to close",
+  "b2b",
+  "warehouse rave",
+  "rave"
 ];
 
 const NON_EDM_EXCLUSION_KEYWORDS = [
@@ -432,19 +479,20 @@ const NON_EDM_EXCLUSION_KEYWORDS = [
 
 function isEdmOrRaveEvent(event: EventInsert) {
   const text = `${event.title} ${event.venue_name ?? ""} ${event.genre_tags.join(" ")}`.toLowerCase();
-  return EDM_DISCOVERY_KEYWORDS.some((keyword) => text.includes(keyword));
+  const genreMatch = TICKETMASTER_ALLOWED_GENRE_KEYWORDS.some((keyword) => text.includes(keyword));
+  const titleMatch = TICKETMASTER_ALLOWED_TITLE_KEYWORDS.some((keyword) => text.includes(keyword));
+  return genreMatch || titleMatch;
 }
 
 function scoreEvent(event: EventInsert) {
   const text = `${event.title} ${event.genre_tags.join(" ")}`.toLowerCase();
   let score = 0;
-  if (text.includes("rave")) score += 3;
-  if (text.includes("edm")) score += 2;
-  if (text.includes("techno")) score += 2;
-  if (text.includes("house")) score += 2;
-  if (text.includes("dubstep")) score += 2;
-  if (text.includes("trance")) score += 2;
-  if (text.includes("drum and bass") || text.includes("dnb")) score += 2;
+  for (const keyword of TICKETMASTER_ALLOWED_GENRE_KEYWORDS) {
+    if (text.includes(keyword)) score += 10;
+  }
+  for (const keyword of TICKETMASTER_ALLOWED_TITLE_KEYWORDS) {
+    if (text.includes(keyword)) score += 8;
+  }
   if (event.genre_tags.length > 0) score += 1;
   return score;
 }
