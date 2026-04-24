@@ -4,6 +4,8 @@ alter table public.events
 create index if not exists events_hidden_starts_at_idx
   on public.events (is_hidden, starts_at asc);
 
+drop function if exists public.list_curated_events(boolean, int);
+
 create or replace function public.list_curated_events(
   p_include_past boolean default false,
   p_limit int default 100
@@ -61,6 +63,9 @@ end;
 $$;
 
 grant execute on function public.list_curated_events(boolean, int) to authenticated;
+
+drop function if exists public.upsert_curated_event(uuid, text, text, text, text, text, timestamptz, timestamptz, text[], text, boolean, int, timestamptz, text, text);
+drop function if exists public.upsert_curated_event(uuid, text, text, text, text, text, timestamptz, timestamptz, text[], text, boolean, int, timestamptz, text, text, boolean);
 
 create or replace function public.upsert_curated_event(
   p_event_id uuid default null,
