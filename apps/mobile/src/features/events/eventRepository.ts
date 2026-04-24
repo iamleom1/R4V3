@@ -107,12 +107,7 @@ export async function listUpcomingEvents(limit: number | null = DEFAULT_DISCOVER
 
       while (true) {
         const to = from + DISCOVERY_ALL_PAGE_SIZE - 1;
-        const { data, error } = await eventsTable
-          .select("id,title,venue_name,city,starts_at,ends_at,genre_tags,source_primary,is_featured,promotion_rank,featured_until,curation_note,flyer_url,music_preview_url")
-          .gte("starts_at", windowStart.toISOString())
-          .eq("is_hidden", false)
-          .order("starts_at", { ascending: true })
-          .range(from, to);
+        const { data, error } = await fetchDiscoveryEventRows(eventsTable, windowStart.toISOString(), from, to);
 
         if (error || !Array.isArray(data) || data.length === 0) {
           break;
@@ -133,12 +128,7 @@ export async function listUpcomingEvents(limit: number | null = DEFAULT_DISCOVER
 
       while (true) {
         const to = from + DISCOVERY_ALL_PAGE_SIZE - 1;
-        const { data, error } = await eventsTable
-          .select("id,title,venue_name,city,starts_at,ends_at,genre_tags,source_primary,is_featured,promotion_rank,featured_until,curation_note,flyer_url,music_preview_url")
-          .gte("starts_at", windowStart.toISOString())
-          .eq("is_hidden", false)
-          .order("starts_at", { ascending: true })
-          .range(from, to);
+        const { data, error } = await fetchDiscoveryEventRows(eventsTable, windowStart.toISOString(), from, to);
 
         if (error || !Array.isArray(data) || data.length === 0) {
           break;
@@ -147,7 +137,7 @@ export async function listUpcomingEvents(limit: number | null = DEFAULT_DISCOVER
         mergedCandidates.push(...data.map(mapEventRow));
         loadedFromSupabase = true;
 
-        const uniqueLoadedCount = dedupeAndRankEvents(mergedCandidates).filter(shouldShowDiscoveryEvent).length;
+        const uniqueLoadedCount = dedupeAndRankEvents(mergedCandidates).length;
         if (uniqueLoadedCount >= targetUniqueCount || data.length < DISCOVERY_ALL_PAGE_SIZE) {
           break;
         }
@@ -164,8 +154,39 @@ export async function listUpcomingEvents(limit: number | null = DEFAULT_DISCOVER
     }
   }
 
-  const rankedEvents = dedupeAndRankEvents(mergedCandidates).filter(shouldShowDiscoveryEvent);
+  const rankedEvents = dedupeAndRankEvents(mergedCandidates);
   return requestLimit === null ? rankedEvents : rankedEvents.slice(requestOffset, requestOffset + requestLimit);
+}
+
+async function fetchDiscoveryEventRows(eventsTable: any, windowStartIso: string, from: number, to: number) {
+  const selectClause =
+    "id,title,venue_name,city,starts_at,ends_at,genre_tags,source_primary,is_featured,promotion_rank,featured_until,curation_note,flyer_url,music_preview_url,is_hidden";
+
+  const primaryResult = await eventsTable
+    .select(selectClause)
+    .gte("starts_at", windowStartIso)
+    .eq("is_hidden", false)
+    .order("starts_at", { ascending: true })
+    .range(from, to);
+
+  if (!isMissingHiddenColumnError(primaryResult.error)) {
+    return primaryResult;
+  }
+
+  const fallbackResult = await eventsTable
+    .select(selectClause)
+    .gte("starts_at", windowStartIso)
+    .order("starts_at", { ascending: true })
+    .range(from, to);
+
+  if (!Array.isArray(fallbackResult.data)) {
+    return fallbackResult;
+  }
+
+  return {
+    ...fallbackResult,
+    data: fallbackResult.data.filter((row: EventRow) => !row.is_hidden)
+  };
 }
 
 export async function listMyEventRsvps(profileId: string): Promise<Record<string, RSVPStatus>> {
@@ -968,6 +989,16 @@ function mapEventRow(row: EventRow): EventRecord {
     flyerUrl: row.flyer_url,
     musicPreviewUrl: row.music_preview_url
   };
+}
+
+function isMissingHiddenColumnError(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const maybeMessage = "message" in error ? error.message : null;
+  const maybeCode = "code" in error ? error.code : null;
+  return maybeCode === "42703" && typeof maybeMessage === "string" && maybeMessage.includes("is_hidden");
 }
 
 function isUuidLike(value: string | null | undefined) {

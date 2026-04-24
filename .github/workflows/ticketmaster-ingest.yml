@@ -1,0 +1,28 @@
+name: Ticketmaster Ingest
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */12 * * *"
+
+jobs:
+  ingest-ticketmaster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      EVENT_INGEST_CRON_SECRET: ${{ secrets.EVENT_INGEST_CRON_SECRET }}
+      TICKETMASTER_INGEST_CITY: ${{ vars.TICKETMASTER_INGEST_CITY || 'Los Angeles' }}
+      TICKETMASTER_INGEST_COUNTRY_CODE: ${{ vars.TICKETMASTER_INGEST_COUNTRY_CODE || 'US' }}
+      TICKETMASTER_INGEST_DAYS_AHEAD: ${{ vars.TICKETMASTER_INGEST_DAYS_AHEAD || '30' }}
+      TICKETMASTER_INGEST_SIZE: ${{ vars.TICKETMASTER_INGEST_SIZE || '80' }}
+      TICKETMASTER_INGEST_RADIUS_MILES: ${{ vars.TICKETMASTER_INGEST_RADIUS_MILES || '80' }}
+      TICKETMASTER_INGEST_KEYWORD: ${{ vars.TICKETMASTER_INGEST_KEYWORD || '' }}
+    steps:
+      - name: Trigger Ticketmaster ingest
+        run: |
+          curl --fail-with-body --show-error --silent \
+            -X POST "${SUPABASE_URL}/functions/v1/ingest-events" \
+            -H "Authorization: Bearer ${EVENT_INGEST_CRON_SECRET}" \
+            -H "Content-Type: application/json" \
+            -d "{\"city\":\"${TICKETMASTER_INGEST_CITY}\",\"countryCode\":\"${TICKETMASTER_INGEST_COUNTRY_CODE}\",\"daysAhead\":${TICKETMASTER_INGEST_DAYS_AHEAD},\"size\":${TICKETMASTER_INGEST_SIZE},\"radiusMiles\":${TICKETMASTER_INGEST_RADIUS_MILES},\"keyword\":\"${TICKETMASTER_INGEST_KEYWORD}\"}"

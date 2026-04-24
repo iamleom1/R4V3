@@ -31,10 +31,10 @@ Deno.serve(async (req) => {
     }
 
     const body = await req.json().catch(() => ({}));
-    const maxIngestAgeHours = Number(body?.maxIngestAgeHours ?? 8);
+    const maxIngestAgeHours = Number(body?.maxIngestAgeHours ?? 18);
     const maxPruneAgeHours = Number(body?.maxPruneAgeHours ?? 30);
     const minimumUpcomingEvents = Number(body?.minimumUpcomingEvents ?? 5);
-    const maxEdmIngestAgeHours = Number(body?.maxEdmIngestAgeHours ?? 30);
+    const maxEdmIngestAgeHours = Number(body?.maxEdmIngestAgeHours ?? 18);
     const minimumEdmFetched = Number(body?.minimumEdmFetched ?? 4);
     const minimumUpcomingPoshEvents = Number(body?.minimumUpcomingPoshEvents ?? 2);
     const minimumUpcomingDiceEvents = Number(body?.minimumUpcomingDiceEvents ?? 1);

@@ -34,6 +34,7 @@ type EventRow = {
   curation_note: string | null;
   flyer_url: string | null;
   music_preview_url: string | null;
+  is_hidden?: boolean | null;
 };
 
 function createEventsClient(rows: EventRow[]) {
@@ -52,6 +53,42 @@ function createEventsClient(rows: EventRow[]) {
         return this;
       },
       range(from: number, to: number) {
+        return Promise.resolve({
+          data: rows.slice(from, to + 1),
+          error: null
+        });
+      }
+    })
+  };
+}
+
+function createEventsClientMissingHiddenColumn(rows: EventRow[]) {
+  let attemptedHiddenFilter = false;
+  return {
+    from: () => ({
+      select() {
+        return this;
+      },
+      gte() {
+        return this;
+      },
+      eq(column: string) {
+        if (column === "is_hidden") {
+          attemptedHiddenFilter = true;
+        }
+        return this;
+      },
+      order() {
+        return this;
+      },
+      range(from: number, to: number) {
+        if (attemptedHiddenFilter) {
+          attemptedHiddenFilter = false;
+          return Promise.resolve({
+            data: null,
+            error: { code: "42703", message: 'column events.is_hidden does not exist' }
+          });
+        }
         return Promise.resolve({
           data: rows.slice(from, to + 1),
           error: null
@@ -130,5 +167,51 @@ describe("listUpcomingEvents", () => {
       curationNote: "Staff pick"
     });
     expect(events[0].genreTags).toEqual(expect.arrayContaining(["Techno", "Hard Techno"]));
+  });
+
+  it("falls back to an unfiltered query when the live schema is missing is_hidden", async () => {
+    mockGetSupabaseClient.mockReturnValue(
+      createEventsClientMissingHiddenColumn([
+        {
+          id: "posh-visible",
+          title: "Visible Event",
+          venue_name: "Venue A",
+          city: "Los Angeles",
+          starts_at: "2026-05-12T05:00:00.000Z",
+          ends_at: null,
+          genre_tags: ["House"],
+          source_primary: "posh",
+          is_featured: false,
+          promotion_rank: 0,
+          featured_until: null,
+          curation_note: null,
+          flyer_url: null,
+          music_preview_url: null,
+          is_hidden: false
+        },
+        {
+          id: "dice-hidden",
+          title: "Hidden Event",
+          venue_name: "Venue B",
+          city: "Los Angeles",
+          starts_at: "2026-05-13T05:00:00.000Z",
+          ends_at: null,
+          genre_tags: ["Techno"],
+          source_primary: "dice",
+          is_featured: false,
+          promotion_rank: 0,
+          featured_until: null,
+          curation_note: null,
+          flyer_url: null,
+          music_preview_url: null,
+          is_hidden: true
+        }
+      ])
+    );
+
+    const events = await listUpcomingEvents(null);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]?.id).toBe("posh-visible");
   });
 });

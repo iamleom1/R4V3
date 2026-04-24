@@ -17,7 +17,7 @@ These jobs are intentionally outside Supabase and write into Supabase using the 
 
 - `edm-ingest.yml`
   - runs `pnpm run:edm:ingest`
-  - current cron: `0 13 * * *`
+  - current cron: `0 */12 * * *`
 - `edm-healthcheck.yml`
   - runs `pnpm run:edm:healthcheck`
   - current cron: `0 * * * *`
@@ -50,7 +50,7 @@ Set these as Actions Variables if you want to tune sensitivity:
 Recommended starting values:
 
 ```text
-EDM_HEALTHCHECK_MAX_RUN_AGE_HOURS=30
+EDM_HEALTHCHECK_MAX_RUN_AGE_HOURS=18
 EDM_HEALTHCHECK_MIN_FETCHED=4
 EDM_HEALTHCHECK_MIN_POSH_UPCOMING=2
 EDM_HEALTHCHECK_MIN_DICE_UPCOMING=1
@@ -99,6 +99,7 @@ The root scripts already route through [scripts/run-edm-job.mjs](/Users/iamleom/
    - ingest writes `job_runs` rows for `ingest-edm-events`
    - healthcheck creates alerts when thresholds are crossed
    - Slack/email notifications arrive when configured
+   - the latest ingest run is never older than 18 hours
 
 ## Related docs
 
