@@ -1,24 +1,21 @@
 export const profileGenderOptions = [
-  "Man",
-  "Woman",
+  "Male",
+  "Female",
   "Non-binary",
-  "Prefer to self-describe",
   "Prefer not to say"
 ] as const;
 
-export const matchPreferenceOptions = ["Men", "Women", "Everyone"] as const;
-
-export function isSelfDescribeGender(value: string) {
-  return value.trim().toLowerCase() === "prefer to self-describe";
-}
+export const matchPreferenceOptions = ["Male", "Female", "Everyone"] as const;
 
 export function normalizeStoredInterestedGenders(values: string[]) {
   const normalized = values
     .map((value) => value.trim())
     .filter(Boolean)
     .map((value) => {
-      if (value === "Man") return "Men";
-      if (value === "Woman") return "Women";
+      if (value === "Man" || value === "Male") return "Male";
+      if (value === "Woman" || value === "Female") return "Female";
+      if (value === "Men") return "Male";
+      if (value === "Women") return "Female";
       return value;
     });
 
@@ -27,7 +24,7 @@ export function normalizeStoredInterestedGenders(values: string[]) {
   }
 
   const unique = Array.from(new Set(normalized));
-  if (unique.includes("Men") && unique.includes("Women")) {
+  if (unique.includes("Male") && unique.includes("Female")) {
     return [];
   }
   return unique;
@@ -41,11 +38,13 @@ export function expandInterestedGendersForMatching(values: string[]) {
 
   const expanded = new Set<string>();
   for (const value of normalized) {
-    if (value === "Men") {
+    if (value === "Male") {
       expanded.add("man");
+      expanded.add("male");
       expanded.add("trans man");
-    } else if (value === "Women") {
+    } else if (value === "Female") {
       expanded.add("woman");
+      expanded.add("female");
       expanded.add("trans woman");
     }
   }

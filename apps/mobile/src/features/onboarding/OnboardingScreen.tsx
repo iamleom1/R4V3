@@ -10,7 +10,7 @@ import { Chip } from "../../components/ui/Chip";
 import { InputField } from "../../components/ui/InputField";
 import { theme } from "../../theme";
 import { captureCurrentDeviceLocation } from "../profile/deviceLocationService";
-import { isSelfDescribeGender, matchPreferenceOptions, normalizeStoredInterestedGenders, profileGenderOptions } from "../profile/genderOptions";
+import { matchPreferenceOptions, normalizeStoredInterestedGenders, profileGenderOptions } from "../profile/genderOptions";
 import { validateProfileDraft } from "../profile/profileDraftService";
 
 const vibeOptions = ["Solo-friendly", "Small crew", "Open crew", "Stick together", "Chill meetup", "High energy", "Afters", "Pregame", "Sober-friendly"];
@@ -28,14 +28,6 @@ export function OnboardingScreen() {
   const steps = ["Identity", "Vibe + Music", "Who you want to meet", "Safety & Crew Matching"];
   const validation = validateProfileDraft({ ...profileDraft, onboardingCompleted: true });
   const selectedBirthdate = useMemo(() => parseBirthdate(profileDraft.birthdate), [profileDraft.birthdate]);
-  const customGenderValue = useMemo(() => {
-    const normalized = profileDraft.gender.trim();
-    if (!normalized || isSelfDescribeGender(normalized)) {
-      return "";
-    }
-    return (profileGenderOptions as readonly string[]).includes(normalized) ? "" : normalized;
-  }, [profileDraft.gender]);
-
   const canAdvance = useMemo(() => {
     if (step === 0) {
       return Boolean(profileDraft.displayName.trim() && profileDraft.birthdate.trim() && profileDraft.gender.trim() && profileDraft.city.trim());
@@ -198,14 +190,6 @@ export function OnboardingScreen() {
             placeholder="Select your gender"
             onPress={() => setIsGenderModalOpen(true)}
           />
-          {isSelfDescribeGender(profileDraft.gender) || customGenderValue ? (
-            <LabeledInput
-              label="Self-described gender"
-              value={customGenderValue}
-              onChangeText={(gender) => updateProfileDraft({ gender })}
-              placeholder="Describe your gender"
-            />
-          ) : null}
           <LocationField
             city={profileDraft.city}
             isLocating={isLocating}

@@ -10,7 +10,7 @@ import { Chip } from "../../components/ui/Chip";
 import { RemoteImage } from "../../components/RemoteImage";
 import { theme } from "../../theme";
 import { captureCurrentDeviceLocation } from "./deviceLocationService";
-import { isSelfDescribeGender, matchPreferenceOptions, normalizeStoredInterestedGenders, profileGenderOptions } from "./genderOptions";
+import { matchPreferenceOptions, normalizeStoredInterestedGenders, profileGenderOptions } from "./genderOptions";
 import { listProfilePhotos, type ProfilePhoto } from "./photoRepository";
 import { isCurrentUserModerator } from "./moderationRepository";
 import type { ProfileStackParamList } from "./ProfileNavigator";
@@ -126,14 +126,6 @@ export function ProfileScreen() {
     () => normalizeStoredInterestedGenders(profileDraft.interestedGenders),
     [profileDraft.interestedGenders]
   );
-  const customGenderValue = useMemo(() => {
-    const normalized = profileDraft.gender.trim();
-    if (!normalized || isSelfDescribeGender(normalized)) {
-      return "";
-    }
-    return (profileGenderOptions as readonly string[]).includes(normalized) ? "" : normalized;
-  }, [profileDraft.gender]);
-
   useEffect(() => {
     if (!isCrewReadinessComplete && profileDraft.communityModeEnabled) {
       updateProfileDraft({ communityModeEnabled: false });
@@ -549,14 +541,6 @@ export function ProfileScreen() {
             value={profileDraft.gender || "Not set"}
             onPress={() => setActivePicker("gender")}
           />
-          {isSelfDescribeGender(profileDraft.gender) || customGenderValue ? (
-            <InfoInputRow
-              label="Self-described gender"
-              value={customGenderValue}
-              onChangeText={(gender) => updateProfileDraft({ gender })}
-              placeholder="Describe your gender"
-            />
-          ) : null}
         </View>
       </Panel>
 
