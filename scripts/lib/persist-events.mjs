@@ -51,6 +51,7 @@ export async function persistEvents(admin, events) {
         ends_at: event.endsAt,
         genre_tags: event.genreTags,
         source_primary: event.provider,
+        description: event.description ?? null,
         flyer_url: event.flyerUrl,
         music_preview_url: event.musicPreviewUrl ?? null
       })
@@ -91,6 +92,7 @@ export async function persistEvents(admin, events) {
           ends_at: event.endsAt,
           genre_tags: event.genreTags,
           source_primary: event.provider,
+          description: event.description ?? null,
           flyer_url: event.flyerUrl,
           music_preview_url: event.musicPreviewUrl ?? null
         }))

@@ -96,7 +96,7 @@ describe("EventDiscoveryScreen", () => {
     const screen = render(<EventDiscoveryScreen navigation={navigation} route={{ key: "DiscoverHome", name: "DiscoverHome" } as any} />);
 
     await waitFor(() => {
-      expect(mockListUpcomingEvents).toHaveBeenCalledWith(null, 0);
+      expect(mockListUpcomingEvents).toHaveBeenCalledWith(20, 0);
       expect(screen.getAllByText("Warehouse Pulse").length).toBeGreaterThan(0);
       expect(screen.getAllByText(/Los Angeles/).length).toBeGreaterThan(0);
       expect(screen.getByText("I'm Going")).toBeOnTheScreen();

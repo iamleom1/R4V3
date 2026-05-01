@@ -19,6 +19,7 @@ const args = parseArgs(process.argv.slice(2));
 
 async function main() {
   const fixture = JSON.parse(await fs.readFile(FIXTURE_PATH, "utf8"));
+  validateFixture(fixture);
   const selectedEvents = await selectEvents({
     city: args.city,
     count: args.eventCount
@@ -100,10 +101,41 @@ function materializeProfile(profile, defaults) {
     height: profile.height ?? null,
     zodiac: profile.zodiac ?? null,
     photoFile: profile.photoFile ?? null,
-    intent: profile.intent === "interested" ? "interested" : "going",
+    intent: profile.intent === "interested" ? "none" : "going",
     lookingForCrew: profile.lookingForCrew ?? false,
     location: profile.location ?? defaults.location
   };
+}
+
+function validateFixture(fixture) {
+  if (!fixture?.defaults || !Array.isArray(fixture.profiles)) {
+    throw new Error("Demo fixture must include defaults and a profiles array.");
+  }
+
+  const handles = new Set();
+  for (const profile of fixture.profiles) {
+    if (!profile.handle || !profile.displayName || !profile.bio) {
+      throw new Error("Every demo profile must include handle, displayName, and bio.");
+    }
+    if (handles.has(profile.handle)) {
+      throw new Error(`Duplicate demo profile handle: ${profile.handle}`);
+    }
+    handles.add(profile.handle);
+  }
+
+  const going = fixture.profiles.filter((profile) => profile.intent !== "interested").length;
+  const interested = fixture.profiles.filter((profile) => profile.intent === "interested").length;
+  const lookingForCrew = fixture.profiles.filter((profile) => profile.lookingForCrew).length;
+
+  if (fixture.profiles.length < 10) {
+    console.warn(`Only ${fixture.profiles.length} demo profiles configured. Closed beta demos should use 10-20.`);
+  }
+  if (going === 0 || interested === 0) {
+    console.warn("Demo profiles should include both going and non-going RSVP states.");
+  }
+  if (lookingForCrew < 5) {
+    console.warn(`Only ${lookingForCrew} demo profiles have lookingForCrew enabled. Matching may look sparse.`);
+  }
 }
 
 async function ensureDemoAuthUser(profile) {
@@ -260,7 +292,8 @@ async function syncRsvps(userId, assignments) {
 
 function buildAssignments(events, index, profile) {
   const primary = events[index % events.length];
-  return [
+  const secondary = events.length > 1 ? events[(index + Math.ceil(events.length / 2)) % events.length] : null;
+  const assignments = [
     {
       eventId: primary.id,
       eventTitle: primary.title,
@@ -268,6 +301,17 @@ function buildAssignments(events, index, profile) {
       lookingForCrew: profile.intent === "going" ? profile.lookingForCrew : false
     }
   ];
+
+  if (secondary && secondary.id !== primary.id) {
+    assignments.push({
+      eventId: secondary.id,
+      eventTitle: secondary.title,
+      status: index % 3 === 0 ? "none" : "going",
+      lookingForCrew: index % 3 === 0 ? false : profile.lookingForCrew
+    });
+  }
+
+  return assignments;
 }
 
 async function selectEvents({ city, count }) {

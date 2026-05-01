@@ -29,6 +29,7 @@ The scripts require:
 
 ```bash
 pnpm seed:demo
+pnpm verify:demo
 pnpm reset:demo
 ```
 

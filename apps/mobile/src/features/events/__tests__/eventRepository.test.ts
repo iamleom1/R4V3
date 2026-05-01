@@ -32,6 +32,7 @@ type EventRow = {
   promotion_rank: number;
   featured_until: string | null;
   curation_note: string | null;
+  description: string | null;
   flyer_url: string | null;
   music_preview_url: string | null;
   is_hidden?: boolean | null;
@@ -98,6 +99,42 @@ function createEventsClientMissingHiddenColumn(rows: EventRow[]) {
   };
 }
 
+function createEventsClientMissingDescriptionColumn(rows: EventRow[]) {
+  let attemptedDescriptionSelect = false;
+  return {
+    from: () => ({
+      select(selectClause?: string) {
+        if (typeof selectClause === "string" && selectClause.includes("description")) {
+          attemptedDescriptionSelect = true;
+        }
+        return this;
+      },
+      gte() {
+        return this;
+      },
+      eq() {
+        return this;
+      },
+      order() {
+        return this;
+      },
+      range(from: number, to: number) {
+        if (attemptedDescriptionSelect) {
+          attemptedDescriptionSelect = false;
+          return Promise.resolve({
+            data: null,
+            error: { code: "42703", message: 'column events.description does not exist' }
+          });
+        }
+        return Promise.resolve({
+          data: rows.slice(from, to + 1),
+          error: null
+        });
+      }
+    })
+  };
+}
+
 describe("listUpcomingEvents", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -119,6 +156,7 @@ describe("listUpcomingEvents", () => {
           promotion_rank: 1,
           featured_until: null,
           curation_note: null,
+          description: null,
           flyer_url: null,
           music_preview_url: null
         },
@@ -135,6 +173,7 @@ describe("listUpcomingEvents", () => {
           promotion_rank: 5,
           featured_until: null,
           curation_note: "Staff pick",
+          description: "Underground all-night techno set.",
           flyer_url: "https://example.com/flyer.jpg",
           music_preview_url: null
         },
@@ -151,6 +190,7 @@ describe("listUpcomingEvents", () => {
           promotion_rank: 0,
           featured_until: null,
           curation_note: null,
+          description: null,
           flyer_url: null,
           music_preview_url: null
         }
@@ -185,6 +225,7 @@ describe("listUpcomingEvents", () => {
           promotion_rank: 0,
           featured_until: null,
           curation_note: null,
+          description: null,
           flyer_url: null,
           music_preview_url: null,
           is_hidden: false
@@ -202,6 +243,7 @@ describe("listUpcomingEvents", () => {
           promotion_rank: 0,
           featured_until: null,
           curation_note: null,
+          description: null,
           flyer_url: null,
           music_preview_url: null,
           is_hidden: true
@@ -213,5 +255,38 @@ describe("listUpcomingEvents", () => {
 
     expect(events).toHaveLength(1);
     expect(events[0]?.id).toBe("posh-visible");
+  });
+
+  it("falls back to a legacy select when the live schema is missing description", async () => {
+    mockGetSupabaseClient.mockReturnValue(
+      createEventsClientMissingDescriptionColumn([
+        {
+          id: "posh-visible",
+          title: "Visible Event",
+          venue_name: "Venue A",
+          city: "Los Angeles",
+          starts_at: "2026-05-12T05:00:00.000Z",
+          ends_at: null,
+          genre_tags: ["House"],
+          source_primary: "posh",
+          is_featured: false,
+          promotion_rank: 0,
+          featured_until: null,
+          curation_note: null,
+          description: null,
+          flyer_url: null,
+          music_preview_url: null,
+          is_hidden: false
+        }
+      ])
+    );
+
+    const events = await listUpcomingEvents(null);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      id: "posh-visible",
+      title: "Visible Event"
+    });
   });
 });

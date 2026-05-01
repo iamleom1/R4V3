@@ -116,12 +116,47 @@ describe("EventDetailScreen", () => {
       expect(mockListEventAudienceMetrics).toHaveBeenCalledWith(["event-1"]);
       expect(mockListEventCrewRooms).toHaveBeenCalledWith("event-1", "user-1");
       expect(screen.getByText("I'm Going")).toBeOnTheScreen();
+      expect(screen.queryByText("Find a Crew")).toBeNull();
     });
 
     fireEvent.press(screen.getByText("I'm Going"));
 
     await waitFor(() => {
       expect(mockSetRsvp).toHaveBeenCalledWith("event-1", "going");
+      expect(screen.getByText("You're going 🎉")).toBeOnTheScreen();
+      expect(screen.getByText("Not now")).toBeOnTheScreen();
+    });
+  });
+
+  it("can dismiss the immediate crew prompt after going", async () => {
+    const navigation = {
+      navigate: jest.fn(),
+      goBack: jest.fn(),
+      canGoBack: () => true,
+      getParent: () => null
+    } as any;
+
+    const screen = render(
+      <EventDetailScreen
+        navigation={navigation}
+        route={{ key: "EventDetail", name: "EventDetail", params: { event } } as any}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("I'm Going")).toBeOnTheScreen();
+    });
+
+    fireEvent.press(screen.getByText("I'm Going"));
+
+    await waitFor(() => {
+      expect(screen.getByText("You're going 🎉")).toBeOnTheScreen();
+    });
+
+    fireEvent.press(screen.getByText("Not now"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("You're going 🎉")).toBeNull();
     });
   });
 
@@ -143,13 +178,41 @@ describe("EventDetailScreen", () => {
 
     await waitFor(() => {
       expect(mockListEventCrewRooms).toHaveBeenCalledWith("event-1", "user-1");
-      expect(screen.getByText("Leave Event")).toBeOnTheScreen();
+      expect(screen.getAllByText("Going").length).toBeGreaterThan(0);
+      expect(screen.getByText("Find a Crew")).toBeOnTheScreen();
     });
 
-    fireEvent.press(screen.getAllByText("Looking for Crew")[1]);
+    fireEvent.press(screen.getByText("Find a Crew"));
 
     await waitFor(() => {
       expect(mockSetLooking).toHaveBeenCalledWith("event-1", true);
+    });
+  });
+
+  it("renders hidden location notes as a location fallback", async () => {
+    const navigation = {
+      navigate: jest.fn(),
+      goBack: jest.fn(),
+      canGoBack: () => true,
+      getParent: () => null
+    } as any;
+
+    const hiddenLocationEvent: EventRecord = {
+      ...event,
+      city: "The location will be revealed on the event date"
+    };
+
+    const screen = render(
+      <EventDetailScreen
+        navigation={navigation}
+        route={{ key: "EventDetail", name: "EventDetail", params: { event: hiddenLocationEvent } } as any}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Location")).toBeOnTheScreen();
+      expect(screen.getByText("TBA (revealed day of event)")).toBeOnTheScreen();
+      expect(screen.queryByText("City")).toBeNull();
     });
   });
 });

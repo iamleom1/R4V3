@@ -19,6 +19,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useAppState } from "../../app/AppProvider";
 import { RemoteImage } from "../../components/RemoteImage";
 import { theme } from "../../theme";
+import { expandInterestedGendersForMatching } from "../profile/genderOptions";
 import type { EventRecord } from "../../types/domain";
 import { createSwipeDecision } from "../matches/matchRepository";
 import {
@@ -28,6 +29,7 @@ import {
   type EventCandidatePreview
 } from "./eventRepository";
 import type { DiscoverStackParamList } from "./DiscoverNavigator";
+import { getEventLocationSummary } from "./eventLocation";
 
 type Props = NativeStackScreenProps<DiscoverStackParamList, "EventMatch">;
 
@@ -52,12 +54,14 @@ export function EventMatchScreen({ route, navigation }: Props) {
   const swipe = useRef(new Animated.ValueXY()).current;
   const pulse = useRef(new Animated.Value(0)).current;
   const lockRef = useRef(false);
-  const filteredCandidates = useMemo(
+  const preferredCandidates = useMemo(
     () => candidates.filter((candidate) => candidateMatchesProfilePreferences(candidate, profileDraft)),
     [candidates, profileDraft]
   );
-  const current = filteredCandidates[index] ?? null;
-  const ghost = useMemo(() => filteredCandidates.slice(index + 1, index + 3), [filteredCandidates, index]);
+  const isUsingPreferenceFallback = candidates.length > 0 && preferredCandidates.length === 0;
+  const activeCandidates = isUsingPreferenceFallback ? candidates : preferredCandidates;
+  const current = activeCandidates[index] ?? null;
+  const ghost = useMemo(() => activeCandidates.slice(index + 1, index + 3), [activeCandidates, index]);
   const stackHeight = Math.max(410, Math.min(570, SCREEN_HEIGHT - 270));
   const photoStageHeight = Math.max(260, Math.min(470, stackHeight - 84));
   const eventGenreLabel = useMemo(() => compactGenreLabel(event.genreTags?.[0] ?? null), [event.genreTags]);
@@ -250,11 +254,18 @@ export function EventMatchScreen({ route, navigation }: Props) {
         <View style={styles.eventContextCopy}>
           <Text style={styles.eventContextEyebrow}>Event Matching</Text>
           <Text style={styles.eventContextTitle}>{event.title}</Text>
-          <Text style={styles.eventContextSubtitle}>{event.city || "City TBD"}</Text>
+          <Text style={styles.eventContextSubtitle}>{getEventLocationSummary(event)}</Text>
         </View>
       </View>
 
       <View style={styles.stackShell}>
+        {isUsingPreferenceFallback ? (
+          <View style={styles.preferenceFallbackBanner}>
+            <Text style={styles.preferenceFallbackBannerText}>
+              No one here matches your filters right now. Showing everyone currently looking for a crew.
+            </Text>
+          </View>
+        ) : null}
         <View style={[styles.stackArea, { minHeight: stackHeight }]}>
           {isLoading ? (
             <View style={styles.loadingBlock}>
@@ -354,14 +365,6 @@ export function EventMatchScreen({ route, navigation }: Props) {
                           ))}
                         </View>
                       </View>
-                      <View style={styles.showcaseGroup}>
-                        <Text style={styles.showcaseGroupLabel}>Been to 5+ events</Text>
-                        <View style={styles.showcaseGrid}>
-                          {[(event.title || "Shared event")].slice(0, 1).map((genre, idx) => (
-                            <MusicArtTile key={`${genre}-${idx}`} title={`Went to: ${genre}`} index={idx} />
-                          ))}
-                        </View>
-                      </View>
                     </View>
                   </View>
                 </View>
@@ -427,7 +430,13 @@ export function EventMatchScreen({ route, navigation }: Props) {
           <Text style={styles.dockButtonGhostText}>✕</Text>
         </Pressable>
         <Pressable style={[styles.dockMiniButton, styles.dockMiniButtonMid]}>
-          <Text style={styles.dockMiniText}>♪</Text>
+          <View style={styles.dockMiniRadarWrap}>
+            <View style={styles.dockMiniRadarRingOuter} />
+            <View style={styles.dockMiniRadarRingInner} />
+            <View style={styles.dockMiniRadarCore} />
+            <View style={styles.dockMiniRadarSweep} />
+            <View style={styles.dockMiniRadarBlip} />
+          </View>
         </Pressable>
         <Pressable
           style={[styles.dockButton, styles.dockButtonPrimary, !current && styles.dockButtonPrimaryWide, isSubmitting && styles.actionDisabled]}
@@ -448,14 +457,13 @@ function candidateMatchesProfilePreferences(
   candidate: Pick<EventCandidatePreview, "gender" | "age">,
   profileDraft: { interestedGenders: string[]; preferredAgeMin: number | null; preferredAgeMax: number | null }
 ) {
-  const interested = profileDraft.interestedGenders;
-  if (interested.length > 0) {
+  const interested = expandInterestedGendersForMatching(profileDraft.interestedGenders);
+  if (interested) {
     const candidateGender = (candidate.gender ?? "").trim().toLowerCase();
     if (!candidateGender) {
       return false;
     }
-    const genderMatch = interested.some((value) => value.trim().toLowerCase() === candidateGender);
-    if (!genderMatch) {
+    if (!interested.has(candidateGender)) {
       return false;
     }
   }
@@ -490,18 +498,6 @@ function EventArtTile(props: { title: string; index: number }) {
     <View style={[styles.showcaseArtTile, eventArtPalette(props.index)]}>
       <View style={styles.eventArtBeam} />
       <View style={styles.eventArtOrb} />
-      <View style={styles.showcaseTileFooter}>
-        <Text style={styles.showcaseTileTitle} numberOfLines={2}>{props.title}</Text>
-      </View>
-    </View>
-  );
-}
-
-function MusicArtTile(props: { title: string; index: number }) {
-  return (
-    <View style={[styles.showcaseArtTile, musicArtPalette(props.index)]}>
-      <View style={styles.musicPulse} />
-      <View style={styles.eventArtBeam} />
       <View style={styles.showcaseTileFooter}>
         <Text style={styles.showcaseTileTitle} numberOfLines={2}>{props.title}</Text>
       </View>
@@ -574,6 +570,14 @@ const styles = StyleSheet.create({
     backgroundColor: "#1A1712",
     padding: 8,
     marginTop: 2
+  },
+  preferenceFallbackBanner: {
+    paddingHorizontal: 8,
+    paddingBottom: 6
+  },
+  preferenceFallbackBannerText: {
+    color: "rgba(255,249,239,0.72)",
+    ...theme.type.caption
   },
   stackArea: { flex: 1, position: "relative", paddingTop: 8 },
   loadingBlock: { minHeight: 120, alignItems: "center", justifyContent: "center", gap: 8 },
@@ -1073,7 +1077,51 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.04)"
   },
   dockMiniButtonMid: { transform: [{ translateY: -2 }] },
-  dockMiniText: { color: "#F3D2C3", fontSize: 20, fontWeight: "700" },
+  dockMiniRadarWrap: {
+    width: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  dockMiniRadarRingOuter: {
+    position: "absolute",
+    width: 22,
+    height: 22,
+    borderRadius: 999,
+    borderWidth: 1.5,
+    borderColor: "rgba(243,210,195,0.42)"
+  },
+  dockMiniRadarRingInner: {
+    position: "absolute",
+    width: 12,
+    height: 12,
+    borderRadius: 999,
+    borderWidth: 1.5,
+    borderColor: "rgba(243,210,195,0.32)"
+  },
+  dockMiniRadarCore: {
+    width: 4,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: "#F3D2C3"
+  },
+  dockMiniRadarSweep: {
+    position: "absolute",
+    width: 10,
+    height: 2,
+    borderRadius: 999,
+    backgroundColor: "rgba(243,210,195,0.72)",
+    transform: [{ rotate: "-26deg" }, { translateX: 4 }]
+  },
+  dockMiniRadarBlip: {
+    position: "absolute",
+    width: 4,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: "#F3D2C3",
+    right: 3,
+    top: 4
+  },
   noticeText: {
     color: "#BFE7CB",
     ...theme.type.caption,

@@ -15,6 +15,7 @@
     "test:edm": "node --test scripts/test/*.test.mjs",
     "ingest:edm": "node scripts/ingest-edm-events.mjs",
     "seed:demo": "node scripts/seed-demo-accounts.mjs",
+    "verify:demo": "node scripts/verify-demo-seed.mjs",
     "reset:demo": "node scripts/reset-demo-accounts.mjs",
     "healthcheck:edm": "node scripts/healthcheck-edm-ingest.mjs",
     "run:edm:ingest": "node scripts/run-edm-job.mjs ingest",

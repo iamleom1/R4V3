@@ -18,6 +18,7 @@ type EventRow = {
   promotion_rank: number;
   featured_until: string | null;
   curation_note: string | null;
+  description: string | null;
   flyer_url: string | null;
   music_preview_url: string | null;
   is_hidden?: boolean | null;
@@ -159,25 +160,36 @@ export async function listUpcomingEvents(limit: number | null = DEFAULT_DISCOVER
 }
 
 async function fetchDiscoveryEventRows(eventsTable: any, windowStartIso: string, from: number, to: number) {
-  const selectClause =
+  const fullSelectClause =
+    "id,title,venue_name,city,starts_at,ends_at,genre_tags,source_primary,is_featured,promotion_rank,featured_until,curation_note,description,flyer_url,music_preview_url,is_hidden";
+  const legacySelectClause =
     "id,title,venue_name,city,starts_at,ends_at,genre_tags,source_primary,is_featured,promotion_rank,featured_until,curation_note,flyer_url,music_preview_url,is_hidden";
 
   const primaryResult = await eventsTable
+    .select(fullSelectClause)
+    .gte("starts_at", windowStartIso)
+    .eq("is_hidden", false)
+    .order("starts_at", { ascending: true })
+    .range(from, to);
+
+  if (!isMissingDescriptionColumnError(primaryResult.error) && !isMissingHiddenColumnError(primaryResult.error)) {
+    return primaryResult;
+  }
+
+  const selectClause = isMissingDescriptionColumnError(primaryResult.error) ? legacySelectClause : fullSelectClause;
+
+  const fallbackResultWithHidden = await eventsTable
     .select(selectClause)
     .gte("starts_at", windowStartIso)
     .eq("is_hidden", false)
     .order("starts_at", { ascending: true })
     .range(from, to);
 
-  if (!isMissingHiddenColumnError(primaryResult.error)) {
-    return primaryResult;
+  if (!isMissingHiddenColumnError(fallbackResultWithHidden.error)) {
+    return fallbackResultWithHidden;
   }
 
-  const fallbackResult = await eventsTable
-    .select(selectClause)
-    .gte("starts_at", windowStartIso)
-    .order("starts_at", { ascending: true })
-    .range(from, to);
+  const fallbackResult = await eventsTable.select(selectClause).gte("starts_at", windowStartIso).order("starts_at", { ascending: true }).range(from, to);
 
   if (!Array.isArray(fallbackResult.data)) {
     return fallbackResult;
@@ -986,6 +998,7 @@ function mapEventRow(row: EventRow): EventRecord {
     promotionRank: row.promotion_rank ?? 0,
     featuredUntil: row.featured_until,
     curationNote: row.curation_note,
+    description: row.description,
     flyerUrl: row.flyer_url,
     musicPreviewUrl: row.music_preview_url
   };
@@ -999,6 +1012,16 @@ function isMissingHiddenColumnError(error: unknown) {
   const maybeMessage = "message" in error ? error.message : null;
   const maybeCode = "code" in error ? error.code : null;
   return maybeCode === "42703" && typeof maybeMessage === "string" && maybeMessage.includes("is_hidden");
+}
+
+function isMissingDescriptionColumnError(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const maybeMessage = "message" in error ? error.message : null;
+  const maybeCode = "code" in error ? error.code : null;
+  return maybeCode === "42703" && typeof maybeMessage === "string" && maybeMessage.includes("description");
 }
 
 function isUuidLike(value: string | null | undefined) {
@@ -1136,6 +1159,7 @@ function mapTicketmasterEvent(event: TicketmasterEvent): EventRecord | null {
     promotionRank: 0,
     featuredUntil: null,
     curationNote: null,
+    description: null,
     flyerUrl: extractTicketmasterFlyerUrl(event)
   };
 }
@@ -1403,6 +1427,7 @@ function mergeDuplicateEvents(primary: EventRecord, duplicate: EventRecord): Eve
     endsAt: primary.endsAt ?? duplicate.endsAt ?? null,
     genreTags: mergeTags(primary.genreTags, duplicate.genreTags),
     curationNote: primary.curationNote ?? duplicate.curationNote ?? null,
+    description: primary.description ?? duplicate.description ?? null,
     flyerUrl: primary.flyerUrl ?? duplicate.flyerUrl ?? null,
     musicPreviewUrl: primary.musicPreviewUrl ?? duplicate.musicPreviewUrl ?? null
   };

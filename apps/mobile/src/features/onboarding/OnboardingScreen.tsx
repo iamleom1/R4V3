@@ -10,12 +10,11 @@ import { Chip } from "../../components/ui/Chip";
 import { InputField } from "../../components/ui/InputField";
 import { theme } from "../../theme";
 import { captureCurrentDeviceLocation } from "../profile/deviceLocationService";
+import { isSelfDescribeGender, matchPreferenceOptions, normalizeStoredInterestedGenders, profileGenderOptions } from "../profile/genderOptions";
 import { validateProfileDraft } from "../profile/profileDraftService";
 
 const vibeOptions = ["Solo-friendly", "Small crew", "Open crew", "Stick together", "Chill meetup", "High energy", "Afters", "Pregame", "Sober-friendly"];
 const genreOptions = ["House", "Tech House", "Techno", "Melodic Techno", "Dubstep", "Drum & Bass", "Progressive"];
-const genderOptions = ["Woman", "Man", "Non-binary", "Trans woman", "Trans man", "Genderfluid"];
-const matchGenderOptions = ["Woman", "Man", "Non-binary", "Everyone"] as const;
 const MIN_AGE = 18;
 const MAX_AGE = 50;
 
@@ -29,6 +28,13 @@ export function OnboardingScreen() {
   const steps = ["Identity", "Vibe + Music", "Who you want to meet", "Safety & Crew Matching"];
   const validation = validateProfileDraft({ ...profileDraft, onboardingCompleted: true });
   const selectedBirthdate = useMemo(() => parseBirthdate(profileDraft.birthdate), [profileDraft.birthdate]);
+  const customGenderValue = useMemo(() => {
+    const normalized = profileDraft.gender.trim();
+    if (!normalized || isSelfDescribeGender(normalized)) {
+      return "";
+    }
+    return (profileGenderOptions as readonly string[]).includes(normalized) ? "" : normalized;
+  }, [profileDraft.gender]);
 
   const canAdvance = useMemo(() => {
     if (step === 0) {
@@ -112,16 +118,17 @@ export function OnboardingScreen() {
   }
 
   const selectedMatchGender = useMemo(() => {
-    if (profileDraft.interestedGenders.length === 0) {
+    const normalizedInterestedGenders = normalizeStoredInterestedGenders(profileDraft.interestedGenders);
+    if (normalizedInterestedGenders.length === 0) {
       return "Everyone";
     }
-    if (profileDraft.interestedGenders.length === 1 && matchGenderOptions.includes(profileDraft.interestedGenders[0] as any)) {
-      return profileDraft.interestedGenders[0];
+    if (normalizedInterestedGenders.length === 1 && matchPreferenceOptions.includes(normalizedInterestedGenders[0] as any)) {
+      return normalizedInterestedGenders[0];
     }
-    return profileDraft.interestedGenders[0] ?? "Everyone";
+    return normalizedInterestedGenders[0] ?? "Everyone";
   }, [profileDraft.interestedGenders]);
 
-  function handleSelectInterestedGender(value: (typeof matchGenderOptions)[number]) {
+  function handleSelectInterestedGender(value: (typeof matchPreferenceOptions)[number]) {
     if (value === "Everyone") {
       updateProfileDraft({ interestedGenders: [] });
       return;
@@ -191,6 +198,14 @@ export function OnboardingScreen() {
             placeholder="Select your gender"
             onPress={() => setIsGenderModalOpen(true)}
           />
+          {isSelfDescribeGender(profileDraft.gender) || customGenderValue ? (
+            <LabeledInput
+              label="Self-described gender"
+              value={customGenderValue}
+              onChangeText={(gender) => updateProfileDraft({ gender })}
+              placeholder="Describe your gender"
+            />
+          ) : null}
           <LocationField
             city={profileDraft.city}
             isLocating={isLocating}
@@ -232,9 +247,9 @@ export function OnboardingScreen() {
         <SectionCard title="Who you want to meet" subtitle="Set your discovery preferences">
           <Text style={styles.fieldLabel}>Interested in</Text>
           <ChipGrid
-            options={[...matchGenderOptions]}
+            options={[...matchPreferenceOptions]}
             selected={[selectedMatchGender]}
-            onToggle={(value) => handleSelectInterestedGender(value as (typeof matchGenderOptions)[number])}
+            onToggle={(value) => handleSelectInterestedGender(value as (typeof matchPreferenceOptions)[number])}
             singleSelect
           />
           <View style={styles.rangeHeader}>
@@ -341,7 +356,7 @@ export function OnboardingScreen() {
     <OptionPickerModal
       visible={isGenderModalOpen}
       title="Select gender"
-      options={genderOptions}
+      options={[...profileGenderOptions]}
       selectedValue={profileDraft.gender}
       onClose={() => setIsGenderModalOpen(false)}
       onSelect={(value) => updateProfileDraft({ gender: value })}

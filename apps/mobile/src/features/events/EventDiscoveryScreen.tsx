@@ -31,6 +31,7 @@ import {
   listEventAudienceMetrics,
   listUpcomingEvents
 } from "./eventRepository";
+import { getEventLocationSummary } from "./eventLocation";
 import { captureCurrentDeviceLocation } from "../profile/deviceLocationService";
 import type { DiscoverStackParamList } from "./DiscoverNavigator";
 import { useEventRsvpState } from "./useEventRsvpState";
@@ -39,20 +40,9 @@ type Props = NativeStackScreenProps<DiscoverStackParamList, "DiscoverHome">;
 type AddEventStep = "choice" | "organizer" | "form" | "success";
 type AddEventFlowType = "community" | "promoter" | null;
 type DiscoverSortTab = "top" | "this_weekend" | "nearest" | "most_active" | "soonest";
+type DiscoverGenreFilter = "all" | (typeof EVENT_GENRE_OPTIONS)[number];
 
 const EVENT_GENRE_OPTIONS = ["Afters", "House", "Tech House", "Techno", "Hard Techno", "Dubstep", "Trance", "Drum & Bass", "Hardstyle", "Bass"];
-const EVENT_GENRE_MATCHERS: Record<string, string[]> = {
-  "House": ["house", "progressive house", "afro house", "deep house"],
-  "Tech House": ["tech house"],
-  "Techno": ["techno", "melodic techno"],
-  "Hard Techno": ["hard techno", "hardtechno", "industrial techno", "peak time techno", "hardgroove", "schranz"],
-  "Dubstep": ["dubstep", "brostep", "riddim"],
-  "Trance": ["trance"],
-  "Drum & Bass": ["drum & bass", "drum and bass", "dnb"],
-  "Hardstyle": ["hardstyle"],
-  "Bass": ["bass", "future bass", "trap", "bass music"],
-  "Afters": ["afters", "afterparty", "after party", "afterhours", "after hours"]
-};
 const DISCOVER_PREVIEW_LIMIT = 20;
 const DISCOVER_PAGE_SIZE = 20;
 const RADIUS_OPTIONS = [
@@ -70,18 +60,15 @@ const DISCOVER_SORT_OPTIONS: Array<{ key: DiscoverSortTab; label: string }> = [
 ];
 const DISCOVER_SORT_GROUPS: Array<{ title: string; options: Array<{ key: DiscoverSortTab; label: string }> }> = [
   {
-    title: "RELEVANCE",
+    title: "Sort by:",
     options: [
       { key: "top", label: "🔥 Top" },
-      { key: "most_active", label: "⚡ Most Active" }
+      { key: "most_active", label: "⚡ Most Active" },
+      { key: "nearest", label: "📍 Nearest" }
     ]
   },
   {
-    title: "LOCATION",
-    options: [{ key: "nearest", label: "📍 Nearest" }]
-  },
-  {
-    title: "TIME",
+    title: "Filter by:",
     options: [
       { key: "this_weekend", label: "📅 This Weekend" },
       { key: "soonest", label: "⏰ Starting Soon" }
@@ -112,8 +99,8 @@ export function EventDiscoveryScreen({ navigation }: Props) {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [hasMoreEvents, setHasMoreEvents] = useState(true);
   const [isSavingId, setIsSavingId] = useState<string | null>(null);
-  const [selectedGenre, setSelectedGenre] = useState<string>("All");
   const [selectedRadiusMiles, setSelectedRadiusMiles] = useState<number | null>(null);
+  const [selectedGenre, setSelectedGenre] = useState<DiscoverGenreFilter>("all");
   const [activeSortTab, setActiveSortTab] = useState<DiscoverSortTab>("top");
   const [isSortDropdownOpen, setIsSortDropdownOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -124,9 +111,6 @@ export function EventDiscoveryScreen({ navigation }: Props) {
   const [activePreviewEventId, setActivePreviewEventId] = useState<string | null>(null);
   const previewNoticeShownRef = useRef(false);
 
-  const availableGenres = useMemo(() => {
-    return ["All", ...EVENT_GENRE_OPTIONS];
-  }, []);
   const viewerLocation = useMemo(() => {
     if (typeof profileDraft.locationLat === "number" && typeof profileDraft.locationLng === "number") {
       return { lat: profileDraft.locationLat, lng: profileDraft.locationLng };
@@ -137,21 +121,24 @@ export function EventDiscoveryScreen({ navigation }: Props) {
     return null;
   }, [profileDraft.city, profileDraft.locationLat, profileDraft.locationLng]);
   const filteredEvents = useMemo(() => {
-    const genreFiltered =
-      selectedGenre === "All" ? events : events.filter((event) => eventMatchesGenre(event, selectedGenre));
+    const upcomingEvents = events.filter((event) => isDiscoverableUpcomingEvent(event) && isSceneRelevantDiscoveryEvent(event));
+    const genreFilteredEvents =
+      selectedGenre === "all"
+        ? upcomingEvents
+        : upcomingEvents.filter((event) => event.genreTags?.some((tag) => normalizeGenreTag(tag) === normalizeGenreTag(selectedGenre)));
 
     if (!viewerLocation) {
-      return genreFiltered.filter((event) => {
+      return genreFilteredEvents.filter((event) => {
         const distance = getEventDistanceMiles(event, LOS_ANGELES_CENTER);
         return distance !== null && distance <= 100;
       });
     }
 
     if (selectedRadiusMiles === null) {
-      return genreFiltered;
+      return genreFilteredEvents;
     }
 
-    const nearby = genreFiltered.filter((event) => {
+    const nearby = genreFilteredEvents.filter((event) => {
       const distance = getEventDistanceMiles(event, viewerLocation);
       return distance !== null && distance <= selectedRadiusMiles;
     });
@@ -161,7 +148,7 @@ export function EventDiscoveryScreen({ navigation }: Props) {
     }
 
     const nearbyIds = new Set(nearby.map((event) => event.id));
-    const laFallback = genreFiltered.filter((event) => {
+    const laFallback = genreFilteredEvents.filter((event) => {
       if (nearbyIds.has(event.id)) {
         return false;
       }
@@ -185,8 +172,8 @@ export function EventDiscoveryScreen({ navigation }: Props) {
   const rankingSignature = useMemo(
     () =>
       JSON.stringify({
-        sort: activeSortTab,
         genre: selectedGenre,
+        sort: activeSortTab,
         radius: selectedRadiusMiles
       }),
     [activeSortTab, selectedGenre, selectedRadiusMiles]
@@ -279,7 +266,7 @@ export function EventDiscoveryScreen({ navigation }: Props) {
       if (refreshing) {
         setIsRefreshing(true);
       }
-      if (!reset) {
+      if (!reset && hasMoreEventsRef.current) {
         isLoadingMoreRef.current = true;
         lastLoadMoreStartedAtRef.current = Date.now();
         setIsLoadingMore(true);
@@ -287,22 +274,27 @@ export function EventDiscoveryScreen({ navigation }: Props) {
       setError(null);
 
       try {
-        const nextOffset = reset ? 0 : loadedEventCountRef.current;
-        const eventRows = await listUpcomingEvents(reset ? null : DISCOVER_PAGE_SIZE, nextOffset);
-        setEvents((prev) => {
-          if (reset) {
-            return eventRows;
-          }
-          const merged = new Map(prev.map((event) => [event.id, event]));
-          for (const event of eventRows) {
-            merged.set(event.id, event);
-          }
-          return Array.from(merged.values());
-        });
-        loadedEventCountRef.current = reset ? eventRows.length : loadedEventCountRef.current + eventRows.length;
-        const nextHasMore = reset ? false : eventRows.length === DISCOVER_PAGE_SIZE;
-        hasMoreEventsRef.current = nextHasMore;
-        setHasMoreEvents(nextHasMore);
+        if (reset) {
+          const eventRows = await listUpcomingEvents(DISCOVER_PREVIEW_LIMIT, 0);
+          setEvents(eventRows);
+          loadedEventCountRef.current = eventRows.length;
+          const nextHasMore = eventRows.length === DISCOVER_PREVIEW_LIMIT;
+          hasMoreEventsRef.current = nextHasMore;
+          setHasMoreEvents(nextHasMore);
+        } else {
+          const eventRows = await listUpcomingEvents(DISCOVER_PAGE_SIZE, loadedEventCountRef.current);
+          setEvents((prev) => {
+            const merged = new Map(prev.map((event) => [event.id, event]));
+            for (const event of eventRows) {
+              merged.set(event.id, event);
+            }
+            return Array.from(merged.values());
+          });
+          loadedEventCountRef.current += eventRows.length;
+          const nextHasMore = eventRows.length === DISCOVER_PAGE_SIZE;
+          hasMoreEventsRef.current = nextHasMore;
+          setHasMoreEvents(nextHasMore);
+        }
         lastEventDiscoveryFetchAtRef.current = Date.now();
       } catch (e) {
         setError(toUserFacingError(e, "Failed to load events."));
@@ -352,12 +344,6 @@ export function EventDiscoveryScreen({ navigation }: Props) {
       }
     };
   }, []);
-
-  useEffect(() => {
-    if (!availableGenres.includes(selectedGenre)) {
-      setSelectedGenre("All");
-    }
-  }, [availableGenres, selectedGenre]);
 
   useEffect(() => {
     let cancelled = false;
@@ -452,10 +438,22 @@ export function EventDiscoveryScreen({ navigation }: Props) {
   useEffect(() => {
     prefetchRemoteImages(
       visibleRankedEvents
-        .slice(0, Math.min(events.length + DISCOVER_PAGE_SIZE, visibleRankedEvents.length))
+        .slice(0, Math.min(visibleRankedEvents.length, DISCOVER_PREVIEW_LIMIT + DISCOVER_PAGE_SIZE))
         .map((event) => event.flyerUrl)
     );
-  }, [events.length, visibleRankedEvents]);
+  }, [visibleRankedEvents]);
+
+  useEffect(() => {
+    if (isLoading || isLoadingMoreRef.current || !hasMoreEventsRef.current) {
+      return;
+    }
+
+    if (rankedFilteredEvents.length >= DISCOVER_PREVIEW_LIMIT) {
+      return;
+    }
+
+    void loadEventDiscovery({ reset: false, showSpinner: false });
+  }, [isLoading, loadEventDiscovery, rankedFilteredEvents.length]);
 
   useEffect(() => {
     let active = true;
@@ -755,7 +753,7 @@ export function EventDiscoveryScreen({ navigation }: Props) {
           <Text style={styles.sectionTitle}>🔥 Top Picks This Weekend</Text>
           <Text style={styles.sectionMeta}>{weekendEvents.length} events</Text>
         </View>
-        <Text style={styles.weekendSubtitle}>Trending picks across Thursday, Friday, and Saturday.</Text>
+        <Text style={styles.weekendSubtitle}>Best events this weekend.</Text>
         <ScrollView
           ref={weekendRailRef}
           horizontal
@@ -807,7 +805,7 @@ export function EventDiscoveryScreen({ navigation }: Props) {
                 </FlyerSurface>
                 <Text style={styles.weekendDay}>{formatWeekendDay(event.startsAt)}</Text>
                 <Text style={styles.weekendTitle} numberOfLines={2}>{event.title}</Text>
-                <Text style={styles.weekendMeta} numberOfLines={1}>{event.city || "City TBD"} • {formatEventDate(event.startsAt)}</Text>
+                <Text style={styles.weekendMeta} numberOfLines={1}>{getEventLocationSummary(event)} • {formatEventDate(event.startsAt)}</Text>
                 <View style={styles.weekendActionPill}>
                   <Text style={styles.weekendActionText}>View weekend lineup</Text>
                 </View>
@@ -864,7 +862,7 @@ export function EventDiscoveryScreen({ navigation }: Props) {
                       </View>
                       <Text style={styles.featuredTitle} numberOfLines={2}>{event.title}</Text>
                       <Text style={styles.featuredMeta} numberOfLines={1}>
-                        {[event.city || "City TBD", formatEventDate(event.startsAt)].join(" • ")}
+                        {[getEventLocationSummary(event), formatEventDate(event.startsAt)].join(" • ")}
                       </Text>
                       {distanceAway !== null ? (
                         <Text style={styles.distanceMeta} numberOfLines={1}>{formatDistanceAway(distanceAway)}</Text>
@@ -885,7 +883,7 @@ export function EventDiscoveryScreen({ navigation }: Props) {
         <View style={styles.discoveryControlRow}>
           <View style={styles.sectionHeaderRowCompact}>
             <Text style={styles.sectionTitle}>Browse by genre</Text>
-            <Text style={styles.sectionMeta}>{selectedGenre === "All" ? "All events" : selectedGenre}</Text>
+            <Text style={styles.sectionMeta}>{selectedGenre === "all" ? "All events" : selectedGenre}</Text>
           </View>
           <Pressable
             style={styles.locationTrigger}
@@ -900,11 +898,21 @@ export function EventDiscoveryScreen({ navigation }: Props) {
           </Pressable>
         </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.genreRail}>
-          {availableGenres.map((genre) => {
-            const active = selectedGenre === genre;
+          <Pressable
+            style={[styles.genreChip, selectedGenre === "all" && styles.genreChipActive]}
+            onPress={() => setSelectedGenre("all")}
+          >
+            <Text style={[styles.genreChipText, selectedGenre === "all" && styles.genreChipTextActive]}>All</Text>
+          </Pressable>
+          {EVENT_GENRE_OPTIONS.map((genre) => {
+            const selected = selectedGenre === genre;
             return (
-              <Pressable key={genre} onPress={() => setSelectedGenre(genre)} style={[styles.genreChip, active && styles.genreChipActive]}>
-                <Text style={[styles.genreChipText, active && styles.genreChipTextActive]}>{genre}</Text>
+              <Pressable
+                key={genre}
+                style={[styles.genreChip, selected && styles.genreChipActive]}
+                onPress={() => setSelectedGenre(genre)}
+              >
+                <Text style={[styles.genreChipText, selected && styles.genreChipTextActive]}>{genre}</Text>
               </Pressable>
             );
           })}
@@ -923,14 +931,6 @@ export function EventDiscoveryScreen({ navigation }: Props) {
           <Text style={styles.sectionMeta}>{isLoading ? "Loading" : rankedFilteredEvents.length > 0 ? `${rankedFilteredEvents.length} shown` : "No events"}</Text>
         </View>
       </View>
-      {!isLoading && rankedFilteredEvents.length > 0 ? (
-        <Text style={styles.upcomingSupportText}>
-          {events.length > DISCOVER_PREVIEW_LIMIT
-            ? `${rankedFilteredEvents.length} events loaded. Scroll for more.`
-            : `Showing the first ${Math.min(DISCOVER_PREVIEW_LIMIT, rankedFilteredEvents.length)} events.`}
-        </Text>
-      ) : null}
-
       {isLoading ? (
         <View style={styles.loadingRow}>
           <ActivityIndicator color={theme.colors.accent} />
@@ -1020,7 +1020,7 @@ export function EventDiscoveryScreen({ navigation }: Props) {
                         ]}
                         numberOfLines={1}
                       >
-                        {event.city || "City TBD"}
+                        {getEventLocationSummary(event)}
                       </Text>
                       <Text style={styles.eventPosterMetaDot}>•</Text>
                       <Text
@@ -1090,7 +1090,7 @@ export function EventDiscoveryScreen({ navigation }: Props) {
       ) : null}
 
       {!isLoading && rankedFilteredEvents.length === 0 ? (
-        <Text style={styles.body}>No upcoming events match this genre and location mix yet.</Text>
+            <Text style={styles.body}>No upcoming events match this genre and location mix yet.</Text>
       ) : null}
       </ScrollView>
 
@@ -1755,6 +1755,52 @@ function compareFeaturedEvents(a: EventRecord, b: EventRecord, viewerLocation?: 
   return compareEventStartsAt(a, b);
 }
 
+function isDiscoverableUpcomingEvent(event: Pick<EventRecord, "startsAt" | "endsAt">) {
+  const reference = event.endsAt ?? event.startsAt;
+  const timestamp = new Date(reference).getTime();
+  if (Number.isNaN(timestamp)) {
+    return false;
+  }
+  return timestamp >= Date.now();
+}
+
+const DISCOVERY_OFF_TARGET_KEYWORDS = [
+  "rock",
+  "metal",
+  "punk",
+  "pop punk",
+  "hardcore",
+  "alternative",
+  "indie",
+  "emo",
+  "grunge",
+  "ska",
+  "americana",
+  "singer-songwriter",
+  "country",
+  "folk",
+  "mariachi",
+  "opera",
+  "orchestra",
+  "symphony",
+  "ballet",
+  "broadway",
+  "musical",
+  "tribute",
+  "hip hop",
+  "hip-hop",
+  "rap"
+];
+
+function isSceneRelevantDiscoveryEvent(event: Pick<EventRecord, "title" | "venueName" | "genreTags">) {
+  const haystack = `${event.title} ${event.venueName ?? ""} ${(event.genreTags ?? []).join(" ")}`.toLowerCase();
+  return !DISCOVERY_OFF_TARGET_KEYWORDS.some((keyword) => haystack.includes(keyword));
+}
+
+function normalizeGenreTag(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
 function computeEdmScore(event: EventRecord) {
   const text = `${event.title} ${(event.genreTags ?? []).join(" ")}`.toLowerCase();
   const tokens = ["edm", "rave", "electronic", "house", "techno", "dubstep", "trance", "dnb", "hardstyle", "dance"];
@@ -1777,7 +1823,7 @@ function getClosestWeekendEvents(
 ) {
   const now = new Date();
   const { start, end } = getWeekendWindow(now);
-  const weekendEvents = events
+  const scoredWeekendEvents = events
     .filter((event) => {
       const date = new Date(event.startsAt);
       if (Number.isNaN(date.getTime())) return false;
@@ -1792,7 +1838,7 @@ function getClosestWeekendEvents(
       const timeProximityBonus = Math.max(0, Math.round(40 - daysAway * 4));
       const curatedBoost = isEventCurrentlyFeatured(event) ? 120 + (event.promotionRank ?? 0) * 4 : 0;
       const activityScore = crew * 2 + Math.round(going * 0.18) + timeProximityBonus + curatedBoost;
-      return { event, crew, eventTime, activityScore };
+      return { event, crew, eventTime, activityScore, weekendDay: new Date(event.startsAt).getDay() };
     })
     .sort((a, b) => {
       const distanceCompare = compareEventDistance(a.event, b.event, viewerLocation);
@@ -1803,12 +1849,28 @@ function getClosestWeekendEvents(
       if (a.eventTime !== b.eventTime) return a.eventTime - b.eventTime;
       // Tertiary: blended activity score.
       return b.activityScore - a.activityScore;
-    })
-    .slice(0, 5)
-    .map((row) => row.event);
+    });
 
-  if (weekendEvents.length >= 3) {
-    return weekendEvents;
+  const dayOrder = [5, 6, 0];
+  const selectedWeekendEvents: EventRecord[] = [];
+  const selectedIds = new Set<string>();
+
+  for (const day of dayOrder) {
+    const topForDay = scoredWeekendEvents.find((row) => row.weekendDay === day && !selectedIds.has(row.event.id));
+    if (!topForDay) continue;
+    selectedWeekendEvents.push(topForDay.event);
+    selectedIds.add(topForDay.event.id);
+  }
+
+  for (const row of scoredWeekendEvents) {
+    if (selectedWeekendEvents.length >= 5) break;
+    if (selectedIds.has(row.event.id)) continue;
+    selectedWeekendEvents.push(row.event);
+    selectedIds.add(row.event.id);
+  }
+
+  if (selectedWeekendEvents.length >= 3) {
+    return selectedWeekendEvents;
   }
 
   return [...events]
@@ -1836,13 +1898,13 @@ function getClosestWeekendEvents(
 
 function getWeekendWindow(now: Date) {
   const day = now.getDay(); // Sun=0 ... Sat=6
-  const daysUntilThursday = day >= 4 || day === 0 ? 4 - day : (4 - day + 7) % 7;
+  const daysUntilFriday = day >= 5 || day === 0 ? 5 - day : (5 - day + 7) % 7;
   const start = new Date(now);
-  start.setDate(now.getDate() + daysUntilThursday);
+  start.setDate(now.getDate() + daysUntilFriday);
   start.setHours(0, 0, 0, 0);
 
   const end = new Date(start);
-  end.setDate(start.getDate() + 2); // Thu->Sat
+  end.setDate(start.getDate() + 2); // Fri->Sun
   end.setHours(23, 59, 59, 999);
   return { start, end };
 }
@@ -1984,16 +2046,6 @@ function formatAudienceSummary(metrics: { goingCount: number; lookingForCrewCoun
     parts.push(`${metrics.lookingForCrewCount} looking for crew`);
   }
   return parts.length > 0 ? parts.join(" • ") : null;
-}
-
-function eventMatchesGenre(event: EventRecord, selectedGenre: string) {
-  const matchers = EVENT_GENRE_MATCHERS[selectedGenre];
-  if (!matchers) {
-    return (event.genreTags ?? []).some((tag) => tag.trim().toLowerCase() === selectedGenre.toLowerCase());
-  }
-
-  const normalizedTags = (event.genreTags ?? []).map((tag) => tag.trim().toLowerCase()).filter(Boolean);
-  return normalizedTags.some((tag) => matchers.some((matcher) => tag.includes(matcher)));
 }
 
 function haversineMiles(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {

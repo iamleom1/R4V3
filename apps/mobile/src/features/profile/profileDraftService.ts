@@ -9,15 +9,19 @@ export function validateProfileDraft(draft: ProfileDraft): ProfileDraftValidatio
   const errors: string[] = [];
 
   if (!draft.displayName.trim()) {
-    errors.push("Display name is required.");
+    errors.push("Name is required.");
   }
 
   if (!draft.birthdate.trim()) {
-    errors.push("Birthdate is required.");
+    errors.push("Age is required.");
   }
 
   if (!draft.gender.trim()) {
     errors.push("Gender is required.");
+  }
+
+  if (!draft.city.trim()) {
+    errors.push("Location is required.");
   }
 
   if (!draft.guidelinesAccepted) {

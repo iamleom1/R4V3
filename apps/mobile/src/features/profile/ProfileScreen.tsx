@@ -3,7 +3,6 @@ import Slider from "@react-native-community/slider";
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { Picker } from "@react-native-picker/picker";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppState } from "../../app/AppProvider";
 import { Button } from "../../components/ui/Button";
@@ -11,6 +10,7 @@ import { Chip } from "../../components/ui/Chip";
 import { RemoteImage } from "../../components/RemoteImage";
 import { theme } from "../../theme";
 import { captureCurrentDeviceLocation } from "./deviceLocationService";
+import { isSelfDescribeGender, matchPreferenceOptions, normalizeStoredInterestedGenders, profileGenderOptions } from "./genderOptions";
 import { listProfilePhotos, type ProfilePhoto } from "./photoRepository";
 import { isCurrentUserModerator } from "./moderationRepository";
 import type { ProfileStackParamList } from "./ProfileNavigator";
@@ -18,7 +18,6 @@ import type { ProfileStackParamList } from "./ProfileNavigator";
 const vibeOptions = ["Solo-friendly", "Small crew", "Open crew", "Sober-friendly", "Stick together", "Chill meetup", "Afters", "First-timer friendly"];
 const genreOptions = ["House", "Techno", "Trance", "DnB", "Dubstep", "UKG", "Hardgroove", "Disco"];
 const pronounOptions = ["she/her", "he/him", "they/them", "she/they", "he/they", "any pronouns", "prefer not to say"];
-const genderOptions = ["Woman", "Man", "Non-binary", "Trans woman", "Trans man", "Genderfluid", "Prefer not to say"];
 const smokingOptions = ["Never", "Occasionally", "Socially", "Regularly", "Prefer not to say"];
 const drinkingOptions = ["Never", "Rarely", "Socially", "Often", "Sober", "Prefer not to say"];
 const zodiacOptions = [
@@ -28,6 +27,29 @@ const zodiacOptions = [
 const heightOptions = buildHeightOptions();
 const MIN_AGE = 18;
 const MAX_AGE = 50;
+const crewSignalSpotlightCards = [
+  {
+    label: "Small crew",
+    subtitle: "Tight group, low noise",
+    iconVariant: "pair",
+    glyph: "PAIR",
+    palette: { backgroundColor: "#1D1712", borderColor: "rgba(153,124,78,0.28)", orb: "rgba(162,124,76,0.12)", beam: "rgba(224,178,116,0.10)" }
+  },
+  {
+    label: "Open crew",
+    subtitle: "Meet new people",
+    iconVariant: "radar",
+    glyph: "OPEN",
+    palette: { backgroundColor: "#131A24", borderColor: "rgba(94,126,189,0.28)", orb: "rgba(95,139,214,0.12)", beam: "rgba(144,185,255,0.10)" }
+  },
+  {
+    label: "Chill meetup",
+    subtitle: "Low-key energy",
+    iconVariant: "chill",
+    glyph: "CHILL",
+    palette: { backgroundColor: "#1E1413", borderColor: "rgba(201,101,71,0.26)", orb: "rgba(214,122,89,0.12)", beam: "rgba(255,170,132,0.10)" }
+  }
+] as const;
 
 export function ProfileScreen() {
   const insets = useSafeAreaInsets();
@@ -100,6 +122,17 @@ export function ProfileScreen() {
     const unselected = genreOptions.filter((tag) => !profileDraft.musicGenres.includes(tag));
     return [...selected, ...unselected].slice(0, 4);
   }, [profileDraft.musicGenres, showAllGenres]);
+  const normalizedInterestedGenders = useMemo(
+    () => normalizeStoredInterestedGenders(profileDraft.interestedGenders),
+    [profileDraft.interestedGenders]
+  );
+  const customGenderValue = useMemo(() => {
+    const normalized = profileDraft.gender.trim();
+    if (!normalized || isSelfDescribeGender(normalized)) {
+      return "";
+    }
+    return (profileGenderOptions as readonly string[]).includes(normalized) ? "" : normalized;
+  }, [profileDraft.gender]);
 
   useEffect(() => {
     if (!isCrewReadinessComplete && profileDraft.communityModeEnabled) {
@@ -230,7 +263,7 @@ export function ProfileScreen() {
     if (activePicker === "gender") {
       return {
         title: "Select gender",
-        options: genderOptions,
+        options: [...profileGenderOptions],
         value: profileDraft.gender,
         onSelect: (value: string) => updateProfileDraft({ gender: value })
       };
@@ -336,7 +369,7 @@ export function ProfileScreen() {
                 <Text style={styles.heroTagText}>IDENTITY</Text>
               </View>
               <View style={[styles.heroTag, styles.heroTagMuted]}>
-                <Text style={styles.heroTagTextMuted}>{profileDraft.communityModeEnabled ? "CREW OPEN" : "CREW OFF"}</Text>
+                <Text style={styles.heroTagTextMuted}>{profileDraft.communityModeEnabled ? "DISCOVERY ON" : "DISCOVERY OFF"}</Text>
               </View>
             </View>
 
@@ -362,21 +395,14 @@ export function ProfileScreen() {
             <View style={[styles.progressFill, { width: `${Math.max(6, crewReadinessPct)}%` }]} />
           </View>
           <View style={styles.readinessChecklist}>
-            <ReadinessItem label="Add 1 photo" complete={crewReadinessChecks.photo} onPress={() => handleReadinessPress("photo")} />
-            <ReadinessItem label="Add bio" complete={crewReadinessChecks.bio} onPress={() => handleReadinessPress("bio")} />
-            <ReadinessItem label="Pick 1 vibe" complete={crewReadinessChecks.vibes} onPress={() => handleReadinessPress("vibes")} />
-            <ReadinessItem label="Pick 1 genre" complete={crewReadinessChecks.genres} onPress={() => handleReadinessPress("genres")} />
-            <ReadinessItem label="Accept guidelines" complete={crewReadinessChecks.guidelines} onPress={() => handleReadinessPress("guidelines")} />
+            <ReadinessItem label="Add 1 photo →" complete={crewReadinessChecks.photo} onPress={() => handleReadinessPress("photo")} />
+            <ReadinessItem label="Add bio →" complete={crewReadinessChecks.bio} onPress={() => handleReadinessPress("bio")} />
+            <ReadinessItem label="Pick 1 vibe →" complete={crewReadinessChecks.vibes} onPress={() => handleReadinessPress("vibes")} />
+            <ReadinessItem label="Pick 1 genre →" complete={crewReadinessChecks.genres} onPress={() => handleReadinessPress("genres")} />
+            <ReadinessItem label="Accept guidelines →" complete={crewReadinessChecks.guidelines} onPress={() => handleReadinessPress("guidelines")} />
           </View>
-          <Pressable style={styles.photoEditCta} onPress={() => navigation.navigate("ProfilePhotos")}>
-            <View style={styles.photoEditCopy}>
-              <Text style={styles.photoEditTitle}>Edit Photos</Text>
-              <Text style={styles.photoEditSubtitle}>{photoSlots.filter(Boolean).length}/6 added</Text>
-            </View>
-            <Text style={styles.photoEditAction}>Manage</Text>
-          </Pressable>
           {!isCrewReadinessComplete ? (
-            <Text style={styles.panelFootnote}>Finish your profile to enable crew discovery.</Text>
+            <Text style={styles.panelFootnote}>Unlock event-based matching by completing the steps above.</Text>
           ) : null}
         </View>
 
@@ -394,10 +420,76 @@ export function ProfileScreen() {
       </View>
       <View onLayout={(event) => setCrewSignalsY(event.nativeEvent.layout.y)} />
 
+      <Panel title="Photos" subtitle="Show people who they are meeting">
+        <Pressable style={styles.photoEditCta} onPress={() => navigation.navigate("ProfilePhotos")}>
+          <View style={styles.photoEditCopy}>
+            <Text style={styles.photoEditTitle}>Edit Photos</Text>
+            <Text style={styles.photoEditSubtitle}>{photoSlots.filter(Boolean).length}/6 added</Text>
+          </View>
+          <Text style={styles.photoEditAction}>Manage</Text>
+        </Pressable>
+      </Panel>
+
+      <Panel title="Bio" subtitle="What kind of meetup do you like?">
+        <View style={styles.bioBubbleCard} onLayout={(event) => setBioSectionY(event.nativeEvent.layout.y)}>
+          <View style={styles.bioBubbleHeader}>
+            <Text style={styles.bioBubbleTitle}>About you</Text>
+            <Text style={styles.bioBubbleMeta}>{profileDraft.bio.trim().length}/240</Text>
+          </View>
+          <TextInput
+            value={profileDraft.bio}
+            onChangeText={(bio) => updateProfileDraft({ bio })}
+            placeholder="Chill pregame, doors open, afters, sober-friendly, favorite sets, boundaries, and what you're looking for."
+            placeholderTextColor="rgba(255,249,239,0.34)"
+            style={styles.bioBubbleInput}
+            multiline
+            maxLength={240}
+          />
+        </View>
+      </Panel>
+
       <Panel title="Crew Signals" subtitle="What you want your crew to feel like">
+        <Text style={styles.infoSectionLabel}>Crew Mood</Text>
+        <View style={styles.crewSignalSpotlightGrid}>
+          {crewSignalSpotlightCards.map((option) => {
+            const selected = profileDraft.vibeTags.includes(option.label);
+            return (
+              <Pressable
+                key={option.label}
+                onPress={() => toggleVibeTag(option.label)}
+                style={[
+                  styles.crewSignalSpotlightCard,
+                  option.palette,
+                  selected && styles.crewSignalSpotlightCardSelected
+                ]}
+              >
+                <View style={[styles.crewSignalSpotlightOrb, { backgroundColor: option.palette.orb }]} />
+                <View style={[styles.crewSignalSpotlightBeam, { backgroundColor: option.palette.beam }]} />
+                <View style={styles.crewSignalSpotlightTopRow}>
+                  <View style={styles.crewSignalSpotlightTextWrap}>
+                    <Text style={styles.crewSignalSpotlightTitle}>{option.label}</Text>
+                    <Text style={styles.crewSignalSpotlightSubtitle}>{option.subtitle}</Text>
+                  </View>
+                  <View style={[styles.crewSignalSpotlightBadge, selected && styles.crewSignalSpotlightBadgeSelected]}>
+                    <Text style={[styles.crewSignalSpotlightBadgeText, selected && styles.crewSignalSpotlightBadgeTextSelected]}>
+                      {option.glyph}
+                    </Text>
+                  </View>
+                </View>
+                <View style={styles.crewSignalSpotlightFooter}>
+                  <CrewSignalIcon variant={option.iconVariant} selected={selected} />
+                  <Text style={[styles.crewSignalSpotlightAction, selected && styles.crewSignalSpotlightActionSelected]}>
+                    {selected ? "Selected" : "Tap to choose"}
+                  </Text>
+                </View>
+              </Pressable>
+            );
+          })}
+        </View>
+
         <Text style={styles.infoSectionLabel}>Crew Vibes</Text>
         <View style={styles.chipGrid}>
-          {visibleVibeOptions.map((tag) => (
+          {visibleVibeOptions.filter((tag) => !crewSignalSpotlightCards.some((card) => card.label === tag)).map((tag) => (
             <Chip key={tag} label={tag} selected={profileDraft.vibeTags.includes(tag)} onPress={() => toggleVibeTag(tag)} />
           ))}
         </View>
@@ -430,29 +522,13 @@ export function ProfileScreen() {
             />
           ))}
         </View>
-
-        <View style={styles.bioBubbleCard} onLayout={(event) => setBioSectionY(event.nativeEvent.layout.y)}>
-          <View style={styles.bioBubbleHeader}>
-            <Text style={styles.bioBubbleTitle}>Bio</Text>
-            <Text style={styles.bioBubbleMeta}>{profileDraft.bio.trim().length}/240</Text>
-          </View>
-          <TextInput
-            value={profileDraft.bio}
-            onChangeText={(bio) => updateProfileDraft({ bio })}
-            placeholder="What kind of meetup do you like? Chill pregame, doors open, afters, sober-friendly, etc."
-            placeholderTextColor="rgba(255,249,239,0.34)"
-            style={styles.bioBubbleInput}
-            multiline
-            maxLength={240}
-          />
-        </View>
       </Panel>
 
       <Panel title="Basics" subtitle="Just the essentials">
         <View style={styles.infoCardList}>
           <InfoReadOnlyRow
             label="Location"
-            value={`📍 ${profileDraft.city?.trim() || "Ontario"}`}
+            value={`📍 ${profileDraft.city?.trim() || "City not set"}`}
             helper="Used for nearby events & crews"
           />
           <Button
@@ -473,6 +549,14 @@ export function ProfileScreen() {
             value={profileDraft.gender || "Not set"}
             onPress={() => setActivePicker("gender")}
           />
+          {isSelfDescribeGender(profileDraft.gender) || customGenderValue ? (
+            <InfoInputRow
+              label="Self-described gender"
+              value={customGenderValue}
+              onChangeText={(gender) => updateProfileDraft({ gender })}
+              placeholder="Describe your gender"
+            />
+          ) : null}
         </View>
       </Panel>
 
@@ -480,7 +564,7 @@ export function ProfileScreen() {
         <View style={styles.infoCardList}>
           <InfoMultiSelectRow
             label="Interested in"
-            value={profileDraft.interestedGenders.length > 0 ? profileDraft.interestedGenders.join(", ") : "Select gender preferences"}
+            value={normalizedInterestedGenders.length > 0 ? normalizedInterestedGenders.join(", ") : "Everyone"}
             helper="Only matching profiles will appear in your stack."
             onPress={() => setIsInterestedGenderModalOpen(true)}
           />
@@ -572,7 +656,7 @@ export function ProfileScreen() {
             ) : null}
             {profileSaveStatus === "saved" ? <Text style={styles.successText}>Profile saved.</Text> : null}
             {profileSaveError ? <Text style={styles.errorText}>{profileSaveError}</Text> : null}
-            {crewReadinessLockedReason ? <Text style={styles.panelFootnote}>Complete the checklist above to turn on crew discovery.</Text> : null}
+            {crewReadinessLockedReason ? <Text style={styles.panelFootnote}>Complete the checklist above to start meeting people going to your events.</Text> : null}
 
             <View style={styles.buttonStack}>
               {isModerator ? (
@@ -584,7 +668,7 @@ export function ProfileScreen() {
                   <Button label="System Alerts" variant="secondary" onPress={() => navigation.navigate("SystemAlerts")} />
                 </>
               ) : null}
-              <Button label="Save Profile" onPress={() => void saveProfileDraft()} />
+              <Button label="Save Profile" variant="secondary" onPress={() => void saveProfileDraft()} />
               <Button label="Sign Out" variant="ghost" onPress={() => void signOut()} />
               <Button label="Delete Account" variant="ghost" onPress={() => setIsDeleteModalOpen(true)} />
             </View>
@@ -615,15 +699,12 @@ export function ProfileScreen() {
         <MultiSelectModal
           visible={isInterestedGenderModalOpen}
           title="Interested in"
-          options={genderOptions}
-          selected={profileDraft.interestedGenders}
+          options={[...matchPreferenceOptions]}
+          selected={normalizedInterestedGenders.length > 0 ? normalizedInterestedGenders : ["Everyone"]}
           onClose={() => setIsInterestedGenderModalOpen(false)}
           onToggle={(value) => {
-            const selected = profileDraft.interestedGenders.includes(value);
             updateProfileDraft({
-              interestedGenders: selected
-                ? profileDraft.interestedGenders.filter((item) => item !== value)
-                : [...profileDraft.interestedGenders, value]
+              interestedGenders: value === "Everyone" ? [] : [value]
             });
           }}
         />
@@ -661,6 +742,42 @@ function ReadinessItem(props: { label: string; complete: boolean; onPress: () =>
       </Text>
       <Text style={styles.readinessLabel}>{props.label}</Text>
     </Pressable>
+  );
+}
+
+function CrewSignalIcon(props: { variant: "pair" | "radar" | "chill"; selected: boolean }) {
+  if (props.variant === "pair") {
+    return (
+      <View style={styles.crewSignalIconPairWrap}>
+        <View style={[styles.crewSignalIconPairPerson, props.selected && styles.crewSignalIconPairPersonSelected]}>
+          <View style={[styles.crewSignalIconPairHead, props.selected && styles.crewSignalIconPairHeadSelected]} />
+          <View style={[styles.crewSignalIconPairBody, props.selected && styles.crewSignalIconPairBodySelected]} />
+        </View>
+        <View style={[styles.crewSignalIconPairPerson, props.selected && styles.crewSignalIconPairPersonSelected]}>
+          <View style={[styles.crewSignalIconPairHead, props.selected && styles.crewSignalIconPairHeadSelected]} />
+          <View style={[styles.crewSignalIconPairBody, props.selected && styles.crewSignalIconPairBodySelected]} />
+        </View>
+      </View>
+    );
+  }
+
+  if (props.variant === "chill") {
+    return (
+      <View style={styles.crewSignalIconChillWrap}>
+        <View style={[styles.crewSignalIconMoon, props.selected && styles.crewSignalIconMoonSelected]} />
+        <View style={styles.crewSignalIconMoonCutout} />
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.crewSignalIconRadarWrap}>
+      <View style={[styles.crewSignalIconRadarRingOuter, props.selected && styles.crewSignalIconRadarRingOuterSelected]} />
+      <View style={[styles.crewSignalIconRadarRingInner, props.selected && styles.crewSignalIconRadarRingInnerSelected]} />
+      <View style={[styles.crewSignalIconRadarCore, props.selected && styles.crewSignalIconRadarCoreSelected]} />
+      <View style={[styles.crewSignalIconRadarSweep, props.selected && styles.crewSignalIconRadarSweepSelected]} />
+      <View style={[styles.crewSignalIconRadarBlip, props.selected && styles.crewSignalIconRadarBlipSelected]} />
+    </View>
   );
 }
 
@@ -741,17 +858,21 @@ function OptionPickerModal(props: {
               <Text style={styles.modalCloseText}>Done</Text>
             </Pressable>
           </View>
-          <View style={styles.wheelPickerWrap}>
-            <Picker
-              selectedValue={props.selectedValue}
-              onValueChange={(value) => props.onSelect(String(value))}
-              itemStyle={styles.wheelPickerItem}
-            >
-              {props.options.map((option) => (
-                <Picker.Item key={option} label={option} value={option} />
-              ))}
-            </Picker>
-          </View>
+          <ScrollView style={styles.modalOptionsList} contentContainerStyle={styles.modalOptionsContent}>
+            {props.options.map((option) => {
+              const selected = option === props.selectedValue;
+              return (
+                <Pressable
+                  key={option}
+                  onPress={() => props.onSelect(option)}
+                  style={[styles.modalOptionRow, selected && styles.modalOptionRowSelected]}
+                >
+                  <Text style={[styles.modalOptionText, selected && styles.modalOptionTextSelected]}>{option}</Text>
+                  {selected ? <Text style={styles.modalCheck}>✓</Text> : null}
+                </Pressable>
+              );
+            })}
+          </ScrollView>
         </View>
       </View>
     </Modal>
@@ -1274,6 +1395,205 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 8
   },
+  crewSignalSpotlightGrid: {
+    gap: 10
+  },
+  crewSignalSpotlightCard: {
+    position: "relative",
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 10,
+    overflow: "hidden"
+  },
+  crewSignalSpotlightCardSelected: {
+    borderColor: "rgba(211,92,51,0.44)",
+    backgroundColor: "rgba(211,92,51,0.14)"
+  },
+  crewSignalSpotlightOrb: {
+    position: "absolute",
+    width: 120,
+    height: 120,
+    borderRadius: 999,
+    right: -18,
+    top: -22
+  },
+  crewSignalSpotlightBeam: {
+    position: "absolute",
+    width: 180,
+    height: 30,
+    left: -30,
+    bottom: 14,
+    transform: [{ rotate: "-8deg" }]
+  },
+  crewSignalSpotlightTopRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10
+  },
+  crewSignalSpotlightTextWrap: {
+    flex: 1,
+    gap: 4
+  },
+  crewSignalSpotlightBadge: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,249,239,0.08)",
+    backgroundColor: "rgba(255,249,239,0.04)",
+    paddingHorizontal: 8,
+    paddingVertical: 5
+  },
+  crewSignalSpotlightBadgeSelected: {
+    borderColor: "rgba(255,220,206,0.22)",
+    backgroundColor: "rgba(255,220,206,0.08)"
+  },
+  crewSignalSpotlightBadgeText: {
+    color: "rgba(255,249,239,0.54)",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.5
+  },
+  crewSignalSpotlightBadgeTextSelected: {
+    color: "#FFE4D9"
+  },
+  crewSignalSpotlightTitle: {
+    color: "#FFF8EE",
+    fontSize: 15,
+    fontWeight: "800"
+  },
+  crewSignalSpotlightSubtitle: {
+    color: "rgba(255,249,239,0.58)",
+    fontSize: 12,
+    fontStyle: "italic"
+  },
+  crewSignalSpotlightFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10
+  },
+  crewSignalIconPairWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6
+  },
+  crewSignalIconPairPerson: {
+    alignItems: "center",
+    gap: 2
+  },
+  crewSignalIconPairPersonSelected: {},
+  crewSignalIconPairHead: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,249,239,0.46)"
+  },
+  crewSignalIconPairHeadSelected: {
+    backgroundColor: "#FFE3D7"
+  },
+  crewSignalIconPairBody: {
+    width: 12,
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,249,239,0.28)"
+  },
+  crewSignalIconPairBodySelected: {
+    backgroundColor: "rgba(255,227,215,0.82)"
+  },
+  crewSignalIconRadarWrap: {
+    width: 30,
+    height: 30,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  crewSignalIconRadarRingOuter: {
+    position: "absolute",
+    width: 28,
+    height: 28,
+    borderRadius: 999,
+    borderWidth: 1.5,
+    borderColor: "rgba(255,249,239,0.28)"
+  },
+  crewSignalIconRadarRingOuterSelected: {
+    borderColor: "#FFE3D7"
+  },
+  crewSignalIconRadarRingInner: {
+    position: "absolute",
+    width: 16,
+    height: 16,
+    borderRadius: 999,
+    borderWidth: 1.5,
+    borderColor: "rgba(255,249,239,0.22)"
+  },
+  crewSignalIconRadarRingInnerSelected: {
+    borderColor: "rgba(255,227,215,0.84)"
+  },
+  crewSignalIconRadarCore: {
+    width: 5,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,249,239,0.50)"
+  },
+  crewSignalIconRadarCoreSelected: {
+    backgroundColor: "#FFE3D7"
+  },
+  crewSignalIconRadarSweep: {
+    position: "absolute",
+    width: 12,
+    height: 2,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,249,239,0.34)",
+    transform: [{ rotate: "-28deg" }, { translateX: 5 }]
+  },
+  crewSignalIconRadarSweepSelected: {
+    backgroundColor: "#FFE3D7"
+  },
+  crewSignalIconRadarBlip: {
+    position: "absolute",
+    width: 4,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,249,239,0.38)",
+    right: 5,
+    top: 6
+  },
+  crewSignalIconRadarBlipSelected: {
+    backgroundColor: "#FFE3D7"
+  },
+  crewSignalIconChillWrap: {
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  crewSignalIconMoon: {
+    width: 18,
+    height: 18,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,249,239,0.44)"
+  },
+  crewSignalIconMoonSelected: {
+    backgroundColor: "#FFE3D7"
+  },
+  crewSignalIconMoonCutout: {
+    position: "absolute",
+    width: 14,
+    height: 14,
+    borderRadius: 999,
+    backgroundColor: "#0F0D0A",
+    right: 4,
+    top: 5
+  },
+  crewSignalSpotlightAction: {
+    color: "rgba(255,249,239,0.54)",
+    fontSize: 11,
+    fontWeight: "700"
+  },
+  crewSignalSpotlightActionSelected: {
+    color: "#FFE1D5"
+  },
   ageRangeCard: {
     borderRadius: 16,
     borderWidth: 1,
@@ -1391,16 +1711,6 @@ const styles = StyleSheet.create({
   modalOptionsContent: {
     padding: 12,
     gap: 8
-  },
-  wheelPickerWrap: {
-    margin: 12,
-    borderRadius: 16,
-    overflow: "hidden",
-    backgroundColor: "#14110D"
-  },
-  wheelPickerItem: {
-    color: "#FFF8EE",
-    fontSize: 20
   },
   deleteModalBody: {
     padding: 14,

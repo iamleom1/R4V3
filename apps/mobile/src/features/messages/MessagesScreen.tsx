@@ -300,7 +300,7 @@ export function MessagesScreen({ navigation }: Props) {
         ) : null}
       </View>
 
-      {session?.user?.id ? (
+      {session?.user?.id && !isChatEmpty ? (
         <View style={[styles.refreshHintRow, isChatEmpty && styles.refreshHintRowEmpty]}>
           <Text style={styles.refreshHintIcon}>↓</Text>
           <Text style={styles.refreshHintText}>Pull down to refresh chats</Text>
@@ -327,11 +327,7 @@ export function MessagesScreen({ navigation }: Props) {
           <Text style={styles.sectionTitle}>New Connections</Text>
           <Text style={styles.newMatchesMeta}>{unreadCount} unread</Text>
         </View>
-        {matchBubbleItems.length === 0 ? (
-          <View style={styles.matchesBubbleEmptyWide}>
-            <Text style={styles.matchesBubbleEmptyTextMuted}>No new matches yet</Text>
-          </View>
-        ) : (
+        {matchBubbleItems.length === 0 ? null : (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.matchesBubbleRow}>
             {matchBubbleItems.map((item, idx) => {
               const viewerId = session?.user?.id ?? "me";
@@ -364,14 +360,24 @@ export function MessagesScreen({ navigation }: Props) {
 
       {isChatEmpty && !isLoading && session?.user?.id ? (
         <View style={styles.emptyHero}>
-          <View style={styles.emptyHeroTopRow}>
-            <Text style={styles.emptyHeroEyebrow}>Inbox</Text>
-            <Text style={styles.emptyHeroMeta}>Live refresh on</Text>
-          </View>
-          <Text style={styles.emptyHeroTitle}>Your chat space is clear right now.</Text>
+          <Text style={styles.emptyHeroTitle}>No messages yet</Text>
           <Text style={styles.emptyHeroBody}>
-            New matches, direct messages, and crew chats will land here. Pull down anytime to check for fresh activity.
+            Join an event to meet people going.
           </Text>
+          <View style={styles.emptyHeroActions}>
+            <Pressable
+              style={styles.emptyHeroPrimaryButton}
+              onPress={() => navigation.getParent()?.navigate("Match" as never)}
+            >
+              <Text style={styles.emptyHeroPrimaryButtonText}>Find People at Events</Text>
+            </Pressable>
+            <Pressable
+              style={styles.emptyHeroSecondaryButton}
+              onPress={() => navigation.getParent()?.navigate("Discover" as never)}
+            >
+              <Text style={styles.emptyHeroSecondaryButtonText}>Browse Events</Text>
+            </Pressable>
+          </View>
         </View>
       ) : null}
 
@@ -660,24 +666,6 @@ const styles = StyleSheet.create({
     padding: 14,
     gap: 8
   },
-  emptyHeroTopRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 8
-  },
-  emptyHeroEyebrow: {
-    color: "rgba(255,154,84,0.72)",
-    fontSize: 11,
-    fontWeight: "800",
-    textTransform: "uppercase",
-    letterSpacing: 0.4
-  },
-  emptyHeroMeta: {
-    color: "rgba(235,227,214,0.34)",
-    fontSize: 11,
-    fontWeight: "600"
-  },
   emptyHeroTitle: {
     color: "#FFF8EE",
     fontSize: 17,
@@ -687,6 +675,33 @@ const styles = StyleSheet.create({
     color: "rgba(235,227,214,0.60)",
     fontSize: 13,
     lineHeight: 19
+  },
+  emptyHeroActions: {
+    marginTop: 6,
+    gap: 8
+  },
+  emptyHeroPrimaryButton: {
+    borderRadius: 14,
+    backgroundColor: theme.colors.accent,
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  emptyHeroPrimaryButtonText: {
+    color: "#FFF8EE",
+    fontSize: 14,
+    fontWeight: "800"
+  },
+  emptyHeroSecondaryButton: {
+    alignSelf: "center",
+    paddingHorizontal: 8,
+    paddingVertical: 4
+  },
+  emptyHeroSecondaryButtonText: {
+    color: "rgba(255,249,239,0.72)",
+    fontSize: 13,
+    fontWeight: "700"
   },
   matchesSection: {
     gap: 10

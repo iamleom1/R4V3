@@ -10,6 +10,7 @@ import { theme } from "../../theme";
 import type { EventRecord, RSVPStatus } from "../../types/domain";
 import { hasEventCrewChat, listEventAudienceMetrics } from "./eventRepository";
 import type { DiscoverStackParamList } from "./DiscoverNavigator";
+import { getEventLocationSummary } from "./eventLocation";
 import { useEventRsvpState } from "./useEventRsvpState";
 
 type Props = NativeStackScreenProps<DiscoverStackParamList, "WeekendEvents">;
@@ -101,8 +102,8 @@ export function WeekendEventsScreen({ route, navigation }: Props) {
           <Text style={styles.backButtonText}>‹</Text>
         </Pressable>
         <View>
-          <Text style={styles.headerEyebrow}>Events This Weekend</Text>
-          <Text style={styles.headerTitle}>Thu • Fri • Sat</Text>
+          <Text style={styles.headerEyebrow}>Top Picks This Weekend</Text>
+          <Text style={styles.headerTitle}>Fri • Sat • Sun</Text>
         </View>
       </View>
 
@@ -136,12 +137,12 @@ export function WeekendEventsScreen({ route, navigation }: Props) {
 
               <View style={styles.cardTop}>
                 <Text style={styles.eventTitle}>{event.title}</Text>
-                <Text style={styles.eventMeta}>{event.city || "City TBD"} • {formatEventDate(event.startsAt)}</Text>
+                <Text style={styles.eventMeta}>{getEventLocationSummary(event)} • {formatEventDate(event.startsAt)}</Text>
               </View>
 
               <View style={styles.metricsRow}>
-                <Text style={styles.metricPrimary}>{goingCount} going</Text>
-                <Text style={styles.metricSecondary}>{crewCount} looking for crew</Text>
+                <Text style={styles.metricPrimary}>{goingCount === 0 ? "Be first to join" : `${goingCount} going`}</Text>
+                <Text style={styles.metricSecondary}>{crewCount === 0 ? "Start the first crew" : `${crewCount} looking for crew`}</Text>
               </View>
 
               <Pressable
@@ -154,7 +155,7 @@ export function WeekendEventsScreen({ route, navigation }: Props) {
                 {isSavingId === event.id ? (
                   <ActivityIndicator color={theme.colors.textPrimary} />
                 ) : (
-                  <Text style={styles.goingButtonText}>{isGoing ? "Leave Event" : "Going"}</Text>
+                  <Text style={styles.goingButtonText}>{isGoing ? "Leave Event" : "Join Event"}</Text>
                 )}
               </Pressable>
             </Pressable>

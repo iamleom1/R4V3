@@ -93,6 +93,7 @@ export function mapPoshMarketplaceEvent(rawEvent, region) {
     startsAt,
     endsAt: normalizeIsoDate(rawEvent?.endUtc),
     genreTags: deriveGenreTags(text),
+    description: stringOrNull(rawEvent?.shortDescription),
     flyerUrl: stringOrNull(rawEvent?.flyer),
     rawPayload: { ...rawEvent, canonicalUrl: url }
   };

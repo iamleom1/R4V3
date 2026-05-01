@@ -31,6 +31,7 @@ export interface EventRecord {
   promotionRank?: number;
   featuredUntil?: string | null;
   curationNote?: string | null;
+  description?: string | null;
   flyerUrl?: string | null;
   musicPreviewUrl?: string | null;
 }

@@ -169,9 +169,8 @@ export function MatchesScreen() {
     if (!selectedCrewEvent) return [];
     return sourceCandidates
       .filter((candidate) => candidateMatchesCrewEvent(candidate, selectedCrewEvent))
-      .filter((candidate) => candidate.connectionStatus !== "pending_outgoing" && candidate.connectionStatus !== "matched")
-      .filter((candidate) => candidateMatchesProfilePreferences(candidate, profileDraft));
-  }, [profileDraft, selectedCrewEvent, sourceCandidates]);
+      .filter((candidate) => candidate.connectionStatus !== "pending_outgoing" && candidate.connectionStatus !== "matched");
+  }, [selectedCrewEvent, sourceCandidates]);
   const swipe = React.useRef(new Animated.ValueXY()).current;
   const swipeActionLockedRef = React.useRef(false);
   const current = crewCandidates[index] ?? null;
@@ -737,7 +736,7 @@ export function MatchesScreen() {
         <View style={styles.crewGatewaySectionHeader}>
           <Text style={styles.crewGatewaySectionTitle}>Your planned events</Text>
           <Text style={styles.crewGatewaySectionSubtitle}>
-            Choose an event you’re going to, then start crew-based matching for that event.
+            Meet people going before the event.
           </Text>
         </View>
 
@@ -909,10 +908,16 @@ export function MatchesScreen() {
           </View>
         ) : (
           <View style={styles.inboxEmpty}>
-            <Text style={styles.emptyTitle}>No events marked Going yet</Text>
+            <Text style={styles.emptyTitle}>No plans yet</Text>
             <Text style={styles.body}>
-              Mark an event as “Going” in Events to unlock event-based matching.
+              You haven&apos;t picked an event yet.
             </Text>
+            <Pressable
+              style={styles.emptyCtaButton}
+              onPress={() => navigation.getParent()?.navigate("Discover" as never)}
+            >
+              <Text style={styles.emptyCtaButtonText}>Browse Events</Text>
+            </Pressable>
           </View>
         )}
       </View>
@@ -1019,18 +1024,6 @@ export function MatchesScreen() {
                     <Text style={styles.modalSectionLabel}>Showcase</Text>
                     <View style={styles.showcasePill}>
                       <View style={styles.showcaseGroup}>
-                        <Text style={styles.showcaseGroupLabel}>Been to 5+ events</Text>
-                        <View style={styles.showcaseGrid}>
-                          {(current.previousEvents && current.previousEvents.length > 0
-                            ? current.previousEvents
-                            : [current.eventName ?? "Shared event"]
-                          ).slice(0, 4).map((eventName, idx) => (
-                            <EventArtTile key={`${eventName}-${idx}`} title={`Went to: ${eventName}`} index={idx} />
-                          ))}
-                        </View>
-                      </View>
-
-                      <View style={styles.showcaseGroup}>
                         <Text style={styles.showcaseGroupLabel}>Vibe</Text>
                         <View style={styles.showcaseGrid}>
                           {(current.vibeTags && current.vibeTags.length > 0
@@ -1100,7 +1093,13 @@ export function MatchesScreen() {
           <Text style={styles.dockActionButtonGhostText}>Skip</Text>
         </Pressable>
         <Pressable style={[styles.dockMiniButton, styles.dockMiniButtonMid]}>
-          <Text style={styles.dockMiniText}>♪</Text>
+          <View style={styles.dockMiniRadarWrap}>
+            <View style={styles.dockMiniRadarRingOuter} />
+            <View style={styles.dockMiniRadarRingInner} />
+            <View style={styles.dockMiniRadarCore} />
+            <View style={styles.dockMiniRadarSweep} />
+            <View style={styles.dockMiniRadarBlip} />
+          </View>
         </Pressable>
         <Pressable
           style={[styles.dockActionButton, styles.dockActionButtonPrimary, isSubmitting && styles.actionDisabled]}
@@ -1200,34 +1199,6 @@ function candidateMatchesCrewEvent(
   return Boolean(candidate.eventId && candidate.eventId === event.id);
 }
 
-function candidateMatchesProfilePreferences(candidate: MatchCandidate, profileDraft: { interestedGenders: string[]; preferredAgeMin: number | null; preferredAgeMax: number | null }) {
-  const interested = profileDraft.interestedGenders;
-  if (interested.length > 0) {
-    const candidateGender = (candidate.gender ?? "").trim().toLowerCase();
-    if (!candidateGender) {
-      return false;
-    }
-    const genderMatch = interested.some((value) => value.trim().toLowerCase() === candidateGender);
-    if (!genderMatch) {
-      return false;
-    }
-  }
-
-  const hasAgeConstraint = typeof profileDraft.preferredAgeMin === "number" || typeof profileDraft.preferredAgeMax === "number";
-  if (hasAgeConstraint && typeof candidate.age !== "number") {
-    return false;
-  }
-  if (typeof candidate.age === "number") {
-    if (typeof profileDraft.preferredAgeMin === "number" && candidate.age < profileDraft.preferredAgeMin) {
-      return false;
-    }
-    if (typeof profileDraft.preferredAgeMax === "number" && candidate.age > profileDraft.preferredAgeMax) {
-      return false;
-    }
-  }
-
-  return true;
-}
 
 function compactGenreLabel(value: string | null | undefined) {
   const raw = (value ?? "").trim();
@@ -1261,18 +1232,6 @@ function FactLine(props: { label: string; value: string }) {
     <View style={styles.factLine}>
       <Text style={styles.factLineLabel}>{props.label}</Text>
       <Text style={styles.factLineValue} numberOfLines={1}>{props.value}</Text>
-    </View>
-  );
-}
-
-function EventArtTile(props: { title: string; index: number }) {
-  return (
-    <View style={[styles.showcaseArtTile, eventArtPalette(props.index)]}>
-      <View style={styles.eventArtBeam} />
-      <View style={styles.eventArtOrb} />
-      <View style={styles.showcaseTileFooter}>
-        <Text style={styles.eventArtTitle} numberOfLines={2}>{props.title}</Text>
-      </View>
     </View>
   );
 }
@@ -1980,6 +1939,21 @@ const styles = StyleSheet.create({
     padding: 14,
     gap: 6
   },
+  emptyCtaButton: {
+    marginTop: 10,
+    alignSelf: "stretch",
+    borderRadius: 14,
+    backgroundColor: theme.colors.accent,
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  emptyCtaButtonText: {
+    color: "#FFF8EE",
+    fontWeight: "700",
+    fontSize: 14
+  },
   stackArea: {
     flex: 1,
     position: "relative",
@@ -2651,10 +2625,50 @@ const styles = StyleSheet.create({
   dockMiniButtonMid: {
     transform: [{ translateY: -2 }]
   },
-  dockMiniText: {
-    color: "#F3D2C3",
-    fontSize: 20,
-    fontWeight: "700"
+  dockMiniRadarWrap: {
+    width: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  dockMiniRadarRingOuter: {
+    position: "absolute",
+    width: 22,
+    height: 22,
+    borderRadius: 999,
+    borderWidth: 1.5,
+    borderColor: "rgba(243,210,195,0.42)"
+  },
+  dockMiniRadarRingInner: {
+    position: "absolute",
+    width: 12,
+    height: 12,
+    borderRadius: 999,
+    borderWidth: 1.5,
+    borderColor: "rgba(243,210,195,0.32)"
+  },
+  dockMiniRadarCore: {
+    width: 4,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: "#F3D2C3"
+  },
+  dockMiniRadarSweep: {
+    position: "absolute",
+    width: 10,
+    height: 2,
+    borderRadius: 999,
+    backgroundColor: "rgba(243,210,195,0.72)",
+    transform: [{ rotate: "-26deg" }, { translateX: 4 }]
+  },
+  dockMiniRadarBlip: {
+    position: "absolute",
+    width: 4,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: "#F3D2C3",
+    right: 3,
+    top: 4
   },
   inlineProfileAnchor: {
     marginTop: 8

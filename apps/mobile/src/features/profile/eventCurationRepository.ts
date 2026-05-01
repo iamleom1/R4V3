@@ -110,10 +110,7 @@ export async function upsertCuratedEvent(input: {
   const row = Array.isArray(data) ? data[0] : data;
   if (error || !row) {
     const message = error?.message ?? "Failed to save curated event.";
-    const duplicateEventId = typeof message === "string" && message.startsWith("duplicate_event:")
-      ? message.split(":")[1] ?? null
-      : null;
-    return { ok: false as const, error: message, duplicateEventId };
+    return { ok: false as const, error: message };
   }
 
   return { ok: true as const, eventId: row.event_id as string };

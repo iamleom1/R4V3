@@ -159,6 +159,7 @@ export function mapDiceEvent(rawEvent, region, context = {}) {
     startsAt,
     endsAt: stringOrNull(rawEvent?.dates?.event_end_date),
     genreTags: deriveGenreTags(text),
+    description: stringOrNull(rawEvent?.about?.description),
     musicPreviewUrl: selectDiceMusicPreviewUrl(rawEvent),
     flyerUrl:
       stringOrNull(rawEvent?.images?.portrait) ??

@@ -2,60 +2,28 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
   Image,
   Pressable,
   RefreshControl,
-  ScrollView,
   StyleSheet,
-  Switch,
   Text,
   TextInput,
   View
 } from "react-native";
-import { Button } from "../../components/ui/Button";
 import { theme } from "../../theme";
 import { listCuratedEvents, type CuratedEvent, upsertCuratedEvent } from "./eventCurationRepository";
 
-type Draft = {
-  eventId: string | null;
-  title: string;
-  venueName: string;
-  city: string;
-  startsAt: string;
-  endsAt: string;
-  genreTags: string;
-  isFeatured: boolean;
-  promotionRank: string;
-  featuredUntil: string;
-  curationNote: string;
-  flyerUrl: string;
-  isHidden: boolean;
-};
-
-const emptyDraft: Draft = {
-  eventId: null,
-  title: "",
-  venueName: "",
-  city: "Los Angeles",
-  startsAt: "",
-  endsAt: "",
-  genreTags: "",
-  isFeatured: false,
-  promotionRank: "0",
-  featuredUntil: "",
-  curationNote: "",
-  flyerUrl: "",
-  isHidden: false
-};
+type VisibilityFilter = "all" | "visible" | "hidden";
 
 export function EventCurationScreen() {
   const [events, setEvents] = useState<CuratedEvent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
   const [includePast, setIncludePast] = useState(false);
-  const [draft, setDraft] = useState<Draft>(emptyDraft);
-  const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [visibilityFilter, setVisibilityFilter] = useState<VisibilityFilter>("all");
+  const [savingEventIds, setSavingEventIds] = useState<Set<string>>(new Set());
 
   async function load(refresh = false) {
     if (refresh) {
@@ -63,7 +31,7 @@ export function EventCurationScreen() {
     } else {
       setIsLoading(true);
     }
-    setError(null);
+
     const rows = await listCuratedEvents(includePast);
     setEvents(rows);
     setIsLoading(false);
@@ -74,260 +42,148 @@ export function EventCurationScreen() {
     void load();
   }, [includePast]);
 
-  const featuredCount = useMemo(() => events.filter((event) => event.isFeatured).length, [events]);
+  const hiddenCount = useMemo(() => events.filter((event) => event.isHidden).length, [events]);
 
-  function hydrateDraft(event: CuratedEvent) {
-    setDraft({
+  const filteredEvents = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+
+    return events
+      .filter((event) => {
+        if (visibilityFilter === "visible" && event.isHidden) {
+          return false;
+        }
+        if (visibilityFilter === "hidden" && !event.isHidden) {
+          return false;
+        }
+
+        if (!needle) {
+          return true;
+        }
+
+        const searchable = [event.title, event.venueName, event.city, event.sourcePrimary].filter(Boolean).join(" ").toLowerCase();
+        return searchable.includes(needle);
+      })
+      .sort((left, right) => left.title.localeCompare(right.title, undefined, { sensitivity: "base" }));
+  }, [events, query, visibilityFilter]);
+
+  async function updateEventVisibility(event: CuratedEvent, isHidden: boolean) {
+    setSavingEventIds((prev) => new Set(prev).add(event.eventId));
+
+    const result = await upsertCuratedEvent({
       eventId: event.eventId,
       title: event.title,
-      venueName: event.venueName ?? "",
-      city: event.city ?? "",
-      startsAt: toLocalInputValue(event.startsAt),
-      endsAt: event.endsAt ? toLocalInputValue(event.endsAt) : "",
-      genreTags: event.genreTags.join(", "),
+      venueName: event.venueName,
+      city: event.city,
+      startsAt: event.startsAt,
+      endsAt: event.endsAt,
+      genreTags: event.genreTags,
+      sourcePrimary: event.sourcePrimary,
       isFeatured: event.isFeatured,
-      promotionRank: String(event.promotionRank ?? 0),
-      featuredUntil: event.featuredUntil ? toLocalInputValue(event.featuredUntil) : "",
-      curationNote: event.curationNote ?? "",
-      flyerUrl: event.flyerUrl ?? "",
-      isHidden: event.isHidden
+      promotionRank: event.promotionRank,
+      featuredUntil: event.featuredUntil,
+      curationNote: event.curationNote,
+      flyerUrl: event.flyerUrl,
+      isHidden
     });
-  }
 
-  function resetDraft() {
-    setDraft(emptyDraft);
-  }
-
-  async function handleSave() {
-    const title = draft.title.trim();
-    if (!title) {
-      Alert.alert("Missing title", "Title is required.");
-      return;
-    }
-
-    const startsAt = normalizeDateInput(draft.startsAt);
-    if (!startsAt) {
-      Alert.alert("Invalid start time", "Use a valid date/time, for example 2026-03-20T21:00.");
-      return;
-    }
-
-    const endsAt = normalizeDateInput(draft.endsAt);
-    const featuredUntil = normalizeDateInput(draft.featuredUntil);
-    const promotionRank = clampRank(draft.promotionRank);
-
-    setIsSaving(true);
-    const result = await upsertCuratedEvent({
-      eventId: draft.eventId,
-      title,
-      venueName: draft.venueName.trim() || null,
-      city: draft.city.trim() || null,
-      startsAt,
-      endsAt,
-      genreTags: draft.genreTags
-        .split(",")
-        .map((tag) => tag.trim())
-        .filter(Boolean),
-      isFeatured: draft.isFeatured,
-      promotionRank,
-      featuredUntil,
-      curationNote: draft.curationNote.trim() || null,
-      flyerUrl: draft.flyerUrl.trim() || null,
-      isHidden: draft.isHidden
+    setSavingEventIds((prev) => {
+      const next = new Set(prev);
+      next.delete(event.eventId);
+      return next;
     });
-    setIsSaving(false);
 
     if (!result.ok) {
-      if (result.duplicateEventId) {
-        Alert.alert("Possible duplicate", "An event with a very similar title, city, and start time already exists. Edit the existing event instead of creating a duplicate.");
-      } else {
-        Alert.alert("Save failed", result.error);
-      }
+      Alert.alert("Update failed", result.error);
       return;
     }
 
-    Alert.alert("Saved", "Event curation updated.");
-    resetDraft();
-    void load(true);
+    setEvents((prev) => prev.map((item) => (item.eventId === event.eventId ? { ...item, isHidden } : item)));
   }
 
   return (
-    <ScrollView
-      style={styles.scroll}
-      contentContainerStyle={styles.container}
-      refreshControl={
-        <RefreshControl
-          refreshing={isRefreshing}
-          onRefresh={() => void load(true)}
-          tintColor={theme.colors.accent}
-          progressBackgroundColor="#1A1712"
-        />
-      }
-    >
-      <View style={styles.hero}>
-        <Text style={styles.heroTitle}>Event Curation</Text>
-        <Text style={styles.heroMeta}>{events.length} upcoming • {featuredCount} featured</Text>
+    <View style={styles.screen}>
+      <View style={styles.header}>
+        <Text style={styles.title}>Event Curation</Text>
+        <Text style={styles.meta}>{events.length} events • {hiddenCount} hidden</Text>
       </View>
 
-      <View style={styles.toolbar}>
-        <Pressable style={[styles.filterChip, includePast && styles.filterChipSelected]} onPress={() => setIncludePast((prev) => !prev)}>
-          <Text style={[styles.filterChipText, includePast && styles.filterChipTextSelected]}>
-            {includePast ? "Including past" : "Upcoming only"}
-          </Text>
+      <View style={styles.topRow}>
+        <Pressable style={[styles.pill, includePast && styles.pillActive]} onPress={() => setIncludePast((prev) => !prev)}>
+          <Text style={[styles.pillText, includePast && styles.pillTextActive]}>{includePast ? "Including past" : "Upcoming only"}</Text>
         </Pressable>
-        <Button label="New Curated Event" variant="secondary" onPress={resetDraft} />
+        <Pressable style={styles.pill} onPress={() => void load(true)}>
+          <Text style={styles.pillText}>Refresh</Text>
+        </Pressable>
       </View>
 
-      <View style={styles.panel}>
-        <Text style={styles.panelTitle}>{draft.eventId ? "Edit Event" : "Create Curated Event"}</Text>
-        <View style={styles.fieldGrid}>
-          <LabeledField label="Title">
-            <TextInput value={draft.title} onChangeText={(title) => setDraft((prev) => ({ ...prev, title }))} style={styles.input} placeholder="Event title" placeholderTextColor={theme.colors.textSecondary} />
-          </LabeledField>
-          <LabeledField label="Venue">
-            <TextInput value={draft.venueName} onChangeText={(venueName) => setDraft((prev) => ({ ...prev, venueName }))} style={styles.input} placeholder="Venue name" placeholderTextColor={theme.colors.textSecondary} />
-          </LabeledField>
-          <LabeledField label="City">
-            <TextInput value={draft.city} onChangeText={(city) => setDraft((prev) => ({ ...prev, city }))} style={styles.input} placeholder="City" placeholderTextColor={theme.colors.textSecondary} />
-          </LabeledField>
-          <LabeledField label="Starts At">
-            <TextInput value={draft.startsAt} onChangeText={(startsAt) => setDraft((prev) => ({ ...prev, startsAt }))} style={styles.input} placeholder="2026-03-20T21:00" placeholderTextColor={theme.colors.textSecondary} autoCapitalize="none" />
-          </LabeledField>
-          <LabeledField label="Ends At">
-            <TextInput value={draft.endsAt} onChangeText={(endsAt) => setDraft((prev) => ({ ...prev, endsAt }))} style={styles.input} placeholder="Optional" placeholderTextColor={theme.colors.textSecondary} autoCapitalize="none" />
-          </LabeledField>
-          <LabeledField label="Genre Tags">
-            <TextInput value={draft.genreTags} onChangeText={(genreTags) => setDraft((prev) => ({ ...prev, genreTags }))} style={styles.input} placeholder="House, Tech House, Warehouse" placeholderTextColor={theme.colors.textSecondary} />
-          </LabeledField>
-          <LabeledField label="Promotion Rank">
-            <TextInput value={draft.promotionRank} onChangeText={(promotionRank) => setDraft((prev) => ({ ...prev, promotionRank }))} style={styles.input} placeholder="0-100" placeholderTextColor={theme.colors.textSecondary} keyboardType="number-pad" />
-          </LabeledField>
-          <LabeledField label="Featured Until">
-            <TextInput value={draft.featuredUntil} onChangeText={(featuredUntil) => setDraft((prev) => ({ ...prev, featuredUntil }))} style={styles.input} placeholder="Optional" placeholderTextColor={theme.colors.textSecondary} autoCapitalize="none" />
-          </LabeledField>
-          <LabeledField label="Flyer URL">
-            <TextInput value={draft.flyerUrl} onChangeText={(flyerUrl) => setDraft((prev) => ({ ...prev, flyerUrl }))} style={styles.input} placeholder="https://..." placeholderTextColor={theme.colors.textSecondary} autoCapitalize="none" />
-          </LabeledField>
-        </View>
+      <TextInput
+        value={query}
+        onChangeText={setQuery}
+        style={styles.searchInput}
+        placeholder="Search events"
+        placeholderTextColor={theme.colors.textSecondary}
+      />
 
-        {draft.flyerUrl.trim() ? (
-          <View style={styles.flyerPreviewCard}>
-            <Text style={styles.fieldLabel}>Flyer Preview</Text>
-            <Image source={{ uri: draft.flyerUrl.trim() }} style={styles.flyerPreviewImage} resizeMode="cover" />
-          </View>
-        ) : null}
-
-        <View style={styles.toggleRow}>
-          <View style={styles.toggleCopy}>
-            <Text style={styles.toggleLabel}>Feature this event</Text>
-            <Text style={styles.toggleMeta}>Featured events receive ranking boosts and editorial labeling.</Text>
-          </View>
-          <Switch
-            value={draft.isFeatured}
-            onValueChange={(isFeatured) => setDraft((prev) => ({ ...prev, isFeatured }))}
-            trackColor={{ false: "rgba(255,255,255,0.2)", true: theme.colors.accent }}
-            thumbColor="#fff"
-          />
-        </View>
-
-        <View style={styles.toggleRow}>
-          <View style={styles.toggleCopy}>
-            <Text style={styles.toggleLabel}>Hide from discovery</Text>
-            <Text style={styles.toggleMeta}>Hidden events stay in admin curation but are excluded from the main event page.</Text>
-          </View>
-          <Switch
-            value={draft.isHidden}
-            onValueChange={(isHidden) => setDraft((prev) => ({ ...prev, isHidden }))}
-            trackColor={{ false: "rgba(255,255,255,0.2)", true: theme.colors.accent }}
-            thumbColor="#fff"
-          />
-        </View>
-
-        <LabeledField label="Internal Note">
-          <TextInput value={draft.curationNote} onChangeText={(curationNote) => setDraft((prev) => ({ ...prev, curationNote }))} style={[styles.input, styles.noteInput]} placeholder="Why is this being promoted?" placeholderTextColor={theme.colors.textSecondary} multiline />
-        </LabeledField>
-
-        <View style={styles.actionRow}>
-          <Button label={draft.eventId ? "Save Changes" : "Create Event"} loading={isSaving} onPress={() => void handleSave()} />
-          {draft.eventId ? <Button label="Clear" variant="ghost" onPress={resetDraft} /> : null}
-        </View>
+      <View style={styles.filterRow}>
+        <FilterButton label="All" active={visibilityFilter === "all"} onPress={() => setVisibilityFilter("all")} />
+        <FilterButton label="Visible" active={visibilityFilter === "visible"} onPress={() => setVisibilityFilter("visible")} />
+        <FilterButton label="Hidden" active={visibilityFilter === "hidden"} onPress={() => setVisibilityFilter("hidden")} />
       </View>
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
       {isLoading ? (
         <View style={styles.loadingRow}>
           <ActivityIndicator color={theme.colors.accent} />
-          <Text style={styles.loadingText}>Loading curated events...</Text>
+          <Text style={styles.loadingText}>Loading events...</Text>
         </View>
-      ) : null}
-
-      {events.map((event) => (
-        <Pressable key={event.eventId} style={styles.card} onPress={() => hydrateDraft(event)}>
-          {event.flyerUrl ? <Image source={{ uri: event.flyerUrl }} style={styles.cardFlyer} resizeMode="cover" /> : null}
-          <View style={styles.cardTop}>
-            <View style={styles.badges}>
-              {event.isFeatured ? (
-                <View style={[styles.badge, styles.badgeFeatured]}>
-                  <Text style={styles.badgeText}>R4V3 Pick</Text>
+      ) : (
+        <FlatList
+          data={filteredEvents}
+          keyExtractor={(item) => item.eventId}
+          refreshControl={
+            <RefreshControl
+              refreshing={isRefreshing}
+              onRefresh={() => void load(true)}
+              tintColor={theme.colors.accent}
+              progressBackgroundColor="#1A1712"
+            />
+          }
+          contentContainerStyle={styles.listContent}
+          ItemSeparatorComponent={() => <View style={styles.separator} />}
+          ListEmptyComponent={<Text style={styles.emptyText}>No events match this filter.</Text>}
+          renderItem={({ item }) => {
+            const isSaving = savingEventIds.has(item.eventId);
+            return (
+              <View style={styles.row}>
+                {item.flyerUrl ? <Image source={{ uri: item.flyerUrl }} style={styles.artwork} resizeMode="cover" /> : <View style={styles.artworkPlaceholder}><Text style={styles.artworkPlaceholderText}>E</Text></View>}
+                <View style={styles.rowBody}>
+                  <Text style={[styles.rowTitle, item.isHidden && styles.rowTitleHidden]} numberOfLines={1}>{item.title}</Text>
+                  <Text style={styles.rowSub} numberOfLines={1}>{[item.venueName, item.city].filter(Boolean).join(" • ") || "Unknown venue"}</Text>
+                  <Text style={styles.rowSub} numberOfLines={1}>{formatTimestamp(item.startsAt)}</Text>
                 </View>
-              ) : null}
-              <View style={styles.badge}>
-                <Text style={styles.badgeText}>{event.sourcePrimary}</Text>
+                <View style={styles.rowActions}>
+                  <Pressable
+                    style={[styles.actionButton, item.isHidden ? styles.unhideButton : styles.hideButton, isSaving && styles.actionButtonDisabled]}
+                    disabled={isSaving}
+                    onPress={() => void updateEventVisibility(item, !item.isHidden)}
+                  >
+                    <Text style={styles.actionButtonText}>{isSaving ? "..." : item.isHidden ? "Show" : "Hide"}</Text>
+                  </Pressable>
+                </View>
               </View>
-              {event.isHidden ? (
-                <View style={[styles.badge, styles.badgeHidden]}>
-                  <Text style={styles.badgeText}>Hidden</Text>
-                </View>
-              ) : null}
-            </View>
-            <Text style={styles.rankText}>Rank {event.promotionRank}</Text>
-          </View>
-          <Text style={styles.cardTitle}>{event.title}</Text>
-          <Text style={styles.cardMeta}>
-            {[event.venueName, event.city, formatTimestamp(event.startsAt)].filter(Boolean).join(" • ")}
-          </Text>
-          {event.genreTags.length > 0 ? <Text style={styles.cardGenres}>{event.genreTags.join(" • ")}</Text> : null}
-          {event.curationNote ? <Text style={styles.cardNote}>{event.curationNote}</Text> : null}
-        </Pressable>
-      ))}
-    </ScrollView>
-  );
-}
-
-function LabeledField(props: { label: string; children: React.ReactNode }) {
-  return (
-    <View style={styles.field}>
-      <Text style={styles.fieldLabel}>{props.label}</Text>
-      {props.children}
+            );
+          }}
+        />
+      )}
     </View>
   );
 }
 
-function normalizeDateInput(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-  const normalized = trimmed.includes("T") ? trimmed : trimmed.replace(" ", "T");
-  const parsed = new Date(normalized);
-  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
-}
-
-function toLocalInputValue(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  const offset = date.getTimezoneOffset();
-  const local = new Date(date.getTime() - offset * 60 * 1000);
-  return local.toISOString().slice(0, 16);
-}
-
-function clampRank(value: string) {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
-    return 0;
-  }
-  return Math.max(0, Math.min(100, parsed));
+function FilterButton(props: { label: string; active: boolean; onPress: () => void }) {
+  return (
+    <Pressable style={[styles.filterButton, props.active && styles.filterButtonActive]} onPress={props.onPress}>
+      <Text style={[styles.filterButtonText, props.active && styles.filterButtonTextActive]}>{props.label}</Text>
+    </Pressable>
+  );
 }
 
 function formatTimestamp(value: string) {
@@ -335,6 +191,7 @@ function formatTimestamp(value: string) {
   if (Number.isNaN(date.getTime())) {
     return value;
   }
+
   return new Intl.DateTimeFormat(undefined, {
     month: "short",
     day: "numeric",
@@ -344,189 +201,167 @@ function formatTimestamp(value: string) {
 }
 
 const styles = StyleSheet.create({
-  scroll: {
+  screen: {
     flex: 1,
-    backgroundColor: theme.colors.canvas
+    backgroundColor: "#000",
+    padding: 14,
+    gap: 10
   },
-  container: {
-    padding: 16,
-    gap: 12
+  header: {
+    gap: 2
   },
-  hero: {
-    gap: 4
-  },
-  heroTitle: {
-    color: theme.colors.textPrimary,
+  title: {
+    color: "#F5F5F5",
     ...theme.type.titleLg
   },
-  heroMeta: {
-    color: theme.colors.textSecondary,
+  meta: {
+    color: "#9B9B9B",
     ...theme.type.caption
   },
-  toolbar: {
+  topRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 10
-  },
-  filterChip: {
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-    paddingHorizontal: 12,
-    paddingVertical: 8
-  },
-  filterChipSelected: {
-    borderColor: theme.colors.accent,
-    backgroundColor: theme.colors.accentSoft
-  },
-  filterChipText: {
-    color: theme.colors.textSecondary,
-    fontWeight: "700"
-  },
-  filterChipTextSelected: {
-    color: theme.colors.textPrimary
-  },
-  panel: {
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-    padding: 14,
-    gap: 12
-  },
-  panelTitle: {
-    color: theme.colors.textPrimary,
-    ...theme.type.titleSm
-  },
-  fieldGrid: {
-    gap: 10
-  },
-  field: {
-    gap: 6
-  },
-  fieldLabel: {
-    color: theme.colors.textSecondary,
-    fontWeight: "700"
-  },
-  input: {
-    minHeight: 46,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: "#17120E",
-    color: theme.colors.textPrimary,
-    paddingHorizontal: 12,
-    paddingVertical: 11
-  },
-  noteInput: {
-    minHeight: 90,
-    textAlignVertical: "top"
-  },
-  flyerPreviewCard: {
     gap: 8
   },
-  flyerPreviewImage: {
-    width: "100%",
-    height: 180,
-    borderRadius: 16,
-    backgroundColor: "#110F0C"
+  pill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#2A2A2A",
+    backgroundColor: "#111",
+    paddingHorizontal: 12,
+    paddingVertical: 7
   },
-  toggleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12
+  pillActive: {
+    borderColor: theme.colors.accent,
+    backgroundColor: "rgba(255,179,71,0.16)"
   },
-  toggleCopy: {
-    flex: 1,
-    gap: 4
-  },
-  toggleLabel: {
-    color: theme.colors.textPrimary,
+  pillText: {
+    color: "#C8C8C8",
     fontWeight: "700"
   },
-  toggleMeta: {
-    color: theme.colors.textSecondary
+  pillTextActive: {
+    color: "#FFF"
   },
-  actionRow: {
-    gap: 10
+  searchInput: {
+    minHeight: 42,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#222",
+    backgroundColor: "#0F0F0F",
+    color: "#F5F5F5",
+    paddingHorizontal: 12,
+    paddingVertical: 10
   },
-  error: {
-    color: "#FF9F9F",
-    fontWeight: "600"
+  filterRow: {
+    flexDirection: "row",
+    gap: 8
+  },
+  filterButton: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#2A2A2A",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: "#111"
+  },
+  filterButtonActive: {
+    borderColor: theme.colors.accent,
+    backgroundColor: "rgba(255,179,71,0.16)"
+  },
+  filterButtonText: {
+    color: "#B3B3B3",
+    fontWeight: "700",
+    fontSize: 12
+  },
+  filterButtonTextActive: {
+    color: "#FFF"
   },
   loadingRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8
+    gap: 8,
+    paddingVertical: 12
   },
   loadingText: {
-    color: theme.colors.textSecondary
+    color: "#A9A9A9"
   },
-  card: {
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-    padding: 14,
-    gap: 8
+  listContent: {
+    paddingBottom: 28
   },
-  cardFlyer: {
-    width: "100%",
-    height: 160,
-    borderRadius: 16,
-    backgroundColor: "#110F0C"
+  separator: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "#232323",
+    marginLeft: 66
   },
-  cardTop: {
+  emptyText: {
+    color: "#A9A9A9",
+    textAlign: "center",
+    paddingVertical: 24
+  },
+  row: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    gap: 8
+    gap: 10,
+    paddingVertical: 8
   },
-  badges: {
-    flexDirection: "row",
-    gap: 8,
-    alignItems: "center"
+  artwork: {
+    width: 48,
+    height: 48,
+    borderRadius: 6,
+    backgroundColor: "#1A1A1A"
   },
-  badge: {
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    backgroundColor: "rgba(255,255,255,0.03)"
+  artworkPlaceholder: {
+    width: 48,
+    height: 48,
+    borderRadius: 6,
+    backgroundColor: "#171717",
+    alignItems: "center",
+    justifyContent: "center"
   },
-  badgeFeatured: {
-    borderColor: theme.colors.accent,
-    backgroundColor: theme.colors.accentSoft
-  },
-  badgeHidden: {
-    borderColor: "#FFB454",
-    backgroundColor: "rgba(255,180,84,0.16)"
-  },
-  badgeText: {
-    color: theme.colors.textPrimary,
-    fontWeight: "700",
-    textTransform: "capitalize"
-  },
-  rankText: {
-    color: theme.colors.textSecondary,
+  artworkPlaceholderText: {
+    color: "#6F6F6F",
     fontWeight: "700"
   },
-  cardTitle: {
-    color: theme.colors.textPrimary,
-    ...theme.type.titleSm
+  rowBody: {
+    flex: 1,
+    gap: 2
   },
-  cardMeta: {
-    color: theme.colors.textSecondary
+  rowTitle: {
+    color: "#F1F1F1",
+    fontSize: 18,
+    fontWeight: "500"
   },
-  cardGenres: {
-    color: theme.colors.textPrimary,
-    fontWeight: "600"
+  rowTitleHidden: {
+    color: "#767676",
+    textDecorationLine: "line-through"
   },
-  cardNote: {
-    color: theme.colors.textSecondary
+  rowSub: {
+    color: "#8D8D8D",
+    fontSize: 13
+  },
+  rowActions: {
+    justifyContent: "center",
+    alignItems: "flex-end"
+  },
+  actionButton: {
+    borderRadius: 999,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderWidth: 1
+  },
+  hideButton: {
+    borderColor: "#FF5F57",
+    backgroundColor: "rgba(255,95,87,0.12)"
+  },
+  unhideButton: {
+    borderColor: "#2ED573",
+    backgroundColor: "rgba(46,213,115,0.12)"
+  },
+  actionButtonDisabled: {
+    opacity: 0.7
+  },
+  actionButtonText: {
+    color: "#F5F5F5",
+    fontSize: 12,
+    fontWeight: "700"
   }
 });

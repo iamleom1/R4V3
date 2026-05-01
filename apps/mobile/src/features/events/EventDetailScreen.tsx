@@ -10,6 +10,7 @@ import { theme } from "../../theme";
 import type { EventRecord, RSVPStatus } from "../../types/domain";
 import { hasEventCrewChat, joinEventCrewRoom, listEventAudienceMetrics, listEventCrewRooms, startEventCrewThreadSeed, type EventCrewRoom } from "./eventRepository";
 import type { DiscoverStackParamList } from "./DiscoverNavigator";
+import { getEventLocationInfo, getEventLocationSummary } from "./eventLocation";
 import { useCrewVisibilityState } from "./useCrewVisibilityState";
 import { useEventRsvpState } from "./useEventRsvpState";
 
@@ -28,6 +29,7 @@ export function EventDetailScreen({ route, navigation }: Props) {
   const [crewRooms, setCrewRooms] = useState<EventCrewRoom[]>([]);
   const [isLoadingCrewRooms, setIsLoadingCrewRooms] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showCrewPrompt, setShowCrewPrompt] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -81,7 +83,19 @@ export function EventDetailScreen({ route, navigation }: Props) {
   const crewCount = crewCountBase;
   const palette = useMemo(() => getEventPosterPalette(event), [event]);
   const heroDate = useMemo(() => formatEventDateLong(event.startsAt), [event.startsAt]);
-  const heroMeta = `${event.venueName || "Venue TBA"} • ${event.city || "City TBD"}`;
+  const heroMeta = `${event.venueName || "Venue TBA"} • ${getEventLocationSummary(event)}`;
+  const locationInfo = useMemo(() => getEventLocationInfo(event), [event]);
+  const eventDescription = useMemo(() => getEventDescription(event), [event]);
+  const activitySupportText = useMemo(() => {
+    if (isLoadingCounts) return null;
+    if (goingCount === 0 && crewCount === 0) {
+      return "No one's going yet. Be the first to bring people together.";
+    }
+    if (crewCount === 0) {
+      return "No crew yet. Start the first one.";
+    }
+    return null;
+  }, [crewCount, goingCount, isLoadingCounts]);
 
   function handleClose() {
     if (navigation.canGoBack()) {
@@ -126,10 +140,17 @@ export function EventDetailScreen({ route, navigation }: Props) {
       try {
         setIsSaving(true);
         setError(null);
+        const previousStatus = rsvpStatus;
         const result = await setRsvp(event.id, nextStatus);
         if (!result.ok) {
           setError(result.error);
           return;
+        }
+        if (nextStatus === "going" && previousStatus !== "going") {
+          setShowCrewPrompt(true);
+        }
+        if (nextStatus !== "going") {
+          setShowCrewPrompt(false);
         }
         const metrics = await listEventAudienceMetrics([event.id]);
         const eventMetrics = metrics[event.id] ?? { goingCount: 0, lookingForCrewCount: 0 };
@@ -187,6 +208,24 @@ export function EventDetailScreen({ route, navigation }: Props) {
     });
   }
 
+  async function handleCrewPress() {
+    if (rsvpStatus !== "going" || !session?.user?.id) {
+      return;
+    }
+
+    const result = await setLooking(event.id, !lookingForCrew);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    setShowCrewPrompt(false);
+
+    const metrics = await listEventAudienceMetrics([event.id]);
+    const eventMetrics = metrics[event.id] ?? { goingCount: 0, lookingForCrewCount: 0 };
+    setGoingCount(eventMetrics.goingCount);
+    setCrewCountBase(eventMetrics.lookingForCrewCount);
+  }
+
   return (
     <ScrollView
       style={styles.scroll}
@@ -242,6 +281,8 @@ export function EventDetailScreen({ route, navigation }: Props) {
             <StatBlock label="Looking for Crew" value={isLoadingCounts ? "…" : String(crewCount)} />
           </View>
 
+          {activitySupportText ? <Text style={styles.preCtaSupportText}>{activitySupportText}</Text> : null}
+
           <View style={styles.actionRow}>
             <Pressable
               style={[styles.goingButton, rsvpStatus === "going" && styles.goingButtonActive]}
@@ -249,26 +290,37 @@ export function EventDetailScreen({ route, navigation }: Props) {
               disabled={isSaving}
             >
               <Text style={styles.goingButtonText}>
-                {isSaving ? "Saving…" : rsvpStatus === "going" ? "Leave Event" : "I'm Going"}
+                {isSaving ? "Saving..." : rsvpStatus === "going" ? "Going" : "Join Event"}
               </Text>
             </Pressable>
+          </View>
 
+          {rsvpStatus === "going" ? (
             <Pressable
               style={[styles.crewToggleButton, lookingForCrew && styles.crewToggleButtonActive]}
-              onPress={() => {
-                if (rsvpStatus !== "going" || !session?.user?.id) return;
-                void setLooking(event.id, !lookingForCrew).then(async () => {
-                  const metrics = await listEventAudienceMetrics([event.id]);
-                  const eventMetrics = metrics[event.id] ?? { goingCount: 0, lookingForCrewCount: 0 };
-                  setGoingCount(eventMetrics.goingCount);
-                  setCrewCountBase(eventMetrics.lookingForCrewCount);
-                });
-              }}
+              onPress={() => void handleCrewPress()}
             >
               <View style={[styles.crewToggleDot, lookingForCrew && styles.crewToggleDotActive]} />
-              <Text style={[styles.crewToggleText, lookingForCrew && styles.crewToggleTextActive]}>Looking for Crew</Text>
+              <Text style={[styles.crewToggleText, lookingForCrew && styles.crewToggleTextActive]}>
+                {lookingForCrew ? "Looking for Crew" : "Find a Crew"}
+              </Text>
             </Pressable>
-          </View>
+          ) : null}
+
+          {showCrewPrompt ? (
+            <View style={styles.softPromptCard}>
+              <Text style={styles.softPromptTitle}>You&apos;re going 🎉</Text>
+              <Text style={styles.softPromptBody}>Want to meet others going to this event?</Text>
+              <View style={styles.softPromptActionRow}>
+                <Pressable style={styles.softPromptPrimaryButton} onPress={() => void handleCrewPress()}>
+                  <Text style={styles.softPromptPrimaryButtonText}>Find a Crew</Text>
+                </Pressable>
+                <Pressable style={styles.softPromptSecondaryButton} onPress={() => setShowCrewPrompt(false)}>
+                  <Text style={styles.softPromptSecondaryButtonText}>Not now</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
 
           {error ? <Text style={styles.error}>{error}</Text> : null}
         </View>
@@ -278,51 +330,43 @@ export function EventDetailScreen({ route, navigation }: Props) {
         <Text style={styles.sectionTitle}>Event Info</Text>
         <View style={styles.infoCard}>
           <InfoRow label="Venue" value={event.venueName || "TBA"} />
-          <InfoRow label="City" value={event.city || "TBA"} />
+          <InfoRow label={locationInfo.label} value={locationInfo.value} />
           <InfoRow label="Date" value={heroDate} />
-          <InfoRow label="Source" value={event.sourcePrimary.toUpperCase()} />
+          <InfoRow label="Source" value={formatSourceLabel(event.sourcePrimary)} />
         </View>
       </View>
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Music</Text>
+        <Text style={styles.sectionTitle}>About this event</Text>
         <View style={styles.musicPanel}>
-          <Text style={styles.musicPanelTitle}>Event Sound Profile</Text>
-          <Text style={styles.musicPanelBody}>
-            Explore music related to the event lineup and the genres people are showing up for.
-          </Text>
-          <View style={styles.musicTagWrap}>
-            {(eventGenres.length > 0 ? eventGenres : ["EDM"]).map((genre) => (
-              <View key={`music-${genre}`} style={styles.musicTag}>
-                <Text style={styles.musicTagText}>{genre}</Text>
-              </View>
+          <Text style={styles.musicPanelBody}>{eventDescription}</Text>
+        </View>
+      </View>
+
+      {rsvpStatus === "going" ? (
+        <View style={styles.section}>
+          <View style={styles.sectionHeaderRow}>
+            <Text style={styles.sectionTitle}>Crew Groups</Text>
+            <Pressable style={styles.sectionActionButton} onPress={() => void handleCreateCrewRoom()} disabled={!session?.user?.id || isSaving}>
+              <Text style={styles.sectionActionButtonText}>{isSaving ? "Creating..." : "Create Group"}</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.sectionSupportText}>Create smaller group chats for solo ravers or existing friend groups going together.</Text>
+          <View style={styles.infoCard}>
+            {isLoadingCrewRooms ? <Text style={styles.cardStateText}>Loading groups...</Text> : null}
+            {!isLoadingCrewRooms && crewRooms.length === 0 ? <Text style={styles.cardStateText}>No crew groups yet. Start the first one.</Text> : null}
+            {crewRooms.map((room, index) => (
+              <Pressable key={room.id} style={[styles.crewRoomRow, index === crewRooms.length - 1 && styles.crewRoomRowLast]} onPress={() => void handleOpenCrewRoom(room)}>
+                <View style={styles.crewRoomTextBlock}>
+                  <Text style={styles.crewRoomTitle}>{room.title}</Text>
+                  <Text style={styles.crewRoomMeta}>{room.memberCount}/{room.sizeCap} members • {room.isMember ? "Joined" : "Tap to join"}</Text>
+                </View>
+                <Text style={styles.crewRoomChevron}>›</Text>
+              </Pressable>
             ))}
           </View>
         </View>
-      </View>
-
-      <View style={styles.section}>
-        <View style={styles.sectionHeaderRow}>
-          <Text style={styles.sectionTitle}>Crew Groups</Text>
-          <Pressable style={styles.sectionActionButton} onPress={() => void handleCreateCrewRoom()} disabled={!session?.user?.id || isSaving}>
-            <Text style={styles.sectionActionButtonText}>{isSaving ? "Creating..." : "Create Group"}</Text>
-          </Pressable>
-        </View>
-        <Text style={styles.sectionSupportText}>Create smaller group chats for solo ravers or existing friend groups going together.</Text>
-        <View style={styles.infoCard}>
-          {isLoadingCrewRooms ? <Text style={styles.cardStateText}>Loading groups...</Text> : null}
-          {!isLoadingCrewRooms && crewRooms.length === 0 ? <Text style={styles.cardStateText}>No crew groups yet. Start the first one.</Text> : null}
-          {crewRooms.map((room, index) => (
-            <Pressable key={room.id} style={[styles.crewRoomRow, index === crewRooms.length - 1 && styles.crewRoomRowLast]} onPress={() => void handleOpenCrewRoom(room)}>
-              <View style={styles.crewRoomTextBlock}>
-                <Text style={styles.crewRoomTitle}>{room.title}</Text>
-                <Text style={styles.crewRoomMeta}>{room.memberCount}/{room.sizeCap} members • {room.isMember ? "Joined" : "Tap to join"}</Text>
-              </View>
-              <Text style={styles.crewRoomChevron}>›</Text>
-            </Pressable>
-          ))}
-        </View>
-      </View>
+      ) : null}
 
       {isLoadingCounts ? (
         <View style={styles.loadingRow}>
@@ -404,6 +448,38 @@ function getEventPosterPalette(event: EventRecord) {
     lineB: "rgba(216,119,255,0.4)",
     lineC: "rgba(255,208,188,0.22)"
   };
+}
+
+function getEventDescription(event: EventRecord) {
+  const directDescription = event.description?.trim();
+  if (directDescription) {
+    return clampDescription(directDescription);
+  }
+
+  const curatedDescription = event.curationNote?.trim();
+  if (curatedDescription) {
+    return clampDescription(curatedDescription);
+  }
+
+  const genres = (event.genreTags ?? []).filter(Boolean);
+  if (genres.length > 0) {
+    return `A ${genres.slice(0, 3).join(", ")} event at ${event.venueName || "a venue to be announced"}. More details will be shared closer to the event.`;
+  }
+
+  return "More details about this event will be shared closer to the event date.";
+}
+
+function clampDescription(value: string) {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length > 280 ? `${compact.slice(0, 277).trimEnd()}...` : compact;
+}
+
+function formatSourceLabel(source: EventRecord["sourcePrimary"]) {
+  if (source === "ticketmaster") return "Ticketmaster";
+  if (source === "posh") return "POSH";
+  if (source === "dice") return "DICE";
+  if (source === "manual") return "R4V3";
+  return source.toUpperCase();
 }
 
 const styles = StyleSheet.create({
@@ -550,6 +626,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "800"
   },
+  posterDateSupport: {
+    color: "rgba(255,249,239,0.74)",
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "600",
+    maxWidth: 280
+  },
   posterTitle: {
     color: "#FFF8EE",
     fontSize: 30,
@@ -610,13 +693,20 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700"
   },
+  preCtaSupportText: {
+    color: "rgba(255,249,239,0.72)",
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: "600",
+    textAlign: "center",
+    marginTop: 2
+  },
   actionRow: {
     flexDirection: "row",
-    gap: 8,
     marginTop: 2
   },
   goingButton: {
-    flex: 1,
+    width: "100%",
     minHeight: 48,
     borderRadius: 14,
     borderWidth: 1,
@@ -635,7 +725,7 @@ const styles = StyleSheet.create({
     fontWeight: "800"
   },
   crewToggleButton: {
-    flex: 1.25,
+    width: "100%",
     minHeight: 48,
     borderRadius: 14,
     borderWidth: 1,
@@ -667,6 +757,58 @@ const styles = StyleSheet.create({
   },
   crewToggleTextActive: {
     color: "#FFF8EE"
+  },
+  softPromptCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(211,92,51,0.2)",
+    backgroundColor: "rgba(211,92,51,0.08)",
+    padding: 12,
+    gap: 10
+  },
+  softPromptTitle: {
+    color: "#FFF8EE",
+    fontSize: 15,
+    fontWeight: "800"
+  },
+  softPromptBody: {
+    color: "rgba(255,249,239,0.78)",
+    fontSize: 13,
+    lineHeight: 18
+  },
+  softPromptActionRow: {
+    flexDirection: "row",
+    gap: 8
+  },
+  softPromptPrimaryButton: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
+    backgroundColor: "#D65B2C",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 12
+  },
+  softPromptPrimaryButtonText: {
+    color: "#FFF8EE",
+    fontSize: 13,
+    fontWeight: "800"
+  },
+  softPromptSecondaryButton: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+    backgroundColor: "rgba(255,255,255,0.03)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 12
+  },
+  softPromptSecondaryButtonText: {
+    color: "rgba(255,249,239,0.82)",
+    fontSize: 13,
+    fontWeight: "700"
   },
   error: {
     color: "#FF9F9F",

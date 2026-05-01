@@ -72,10 +72,25 @@ function Harness(props: { onDone: (snapshot: { ok: boolean }) => void }) {
   return null;
 }
 
+function AuthHarness(props: { onReady: (snapshot: { authStatus: string; hasSession: boolean }) => void }) {
+  const { authStatus, session } = useAppState();
+
+  useEffect(() => {
+    if (authStatus === "loading") {
+      return;
+    }
+    props.onReady({ authStatus, hasSession: Boolean(session?.user?.id) });
+  }, [authStatus, props, session]);
+
+  return null;
+}
+
 describe("AppProvider", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetSupabaseClient.mockReturnValue(null);
+    mockRegisterDevicePushToken.mockResolvedValue({ ok: true });
+    mockUnregisterDevicePushToken.mockResolvedValue(undefined);
   });
 
   it("completes onboarding and emits analytics when the profile is valid", async () => {
@@ -96,5 +111,44 @@ describe("AppProvider", () => {
       "onboarding_completed",
       expect.objectContaining({ vibe_count: 3, genre_count: 2 })
     );
+  });
+
+  it("restores an existing auth session on app boot", async () => {
+    const onReady = jest.fn();
+    const unsubscribe = jest.fn();
+
+    mockGetSupabaseClient.mockReturnValue({
+      auth: {
+        getSession: jest.fn(async () => ({
+          data: {
+            session: {
+              user: {
+                id: "user-123",
+                email: "leo@example.com"
+              }
+            }
+          }
+        })),
+        onAuthStateChange: jest.fn(() => ({
+          data: {
+            subscription: {
+              unsubscribe
+            }
+          }
+        }))
+      }
+    });
+
+    render(
+      <AppProvider>
+        <AuthHarness onReady={onReady} />
+      </AppProvider>
+    );
+
+    await waitFor(() => {
+      expect(onReady).toHaveBeenCalledWith({ authStatus: "authenticated", hasSession: true });
+    });
+
+    expect(mockTrackEvent).toHaveBeenCalledWith("auth_session_restored", { source: "app_boot" });
   });
 });
