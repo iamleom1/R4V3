@@ -156,12 +156,12 @@ function Segmented(props: {
 const styles = StyleSheet.create({
   scroll: {
     flex: 1,
-    backgroundColor: "#11100D"
+    backgroundColor: theme.colors.canvas
   },
   container: {
     padding: 16,
     gap: 12,
-    backgroundColor: "#11100D"
+    backgroundColor: theme.colors.canvas
   },
   hero: {
     borderRadius: 20,

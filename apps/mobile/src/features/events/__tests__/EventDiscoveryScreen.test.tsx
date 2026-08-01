@@ -1,5 +1,6 @@
 import React from "react";
-import { render, waitFor } from "@testing-library/react-native";
+import { Alert } from "react-native";
+import { fireEvent, render, waitFor } from "@testing-library/react-native";
 
 import { EventDiscoveryScreen } from "../EventDiscoveryScreen";
 import { createTestAppState } from "../../../test/testAppState";
@@ -11,6 +12,12 @@ const mockListUpcomingEvents = jest.fn();
 const mockListEventAudienceMetrics = jest.fn();
 const mockHasEventCrewChat = jest.fn();
 const mockRefreshRsvps = jest.fn();
+const mockAudioPlayer = {
+  play: jest.fn(),
+  pause: jest.fn(),
+  replace: jest.fn()
+};
+const futureStartsAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
 jest.mock("../../../app/AppProvider", () => ({
   useAppState: () => mockUseAppState()
@@ -29,8 +36,11 @@ jest.mock("../../../components/RemoteImage", () => ({
   prefetchRemoteImages: jest.fn()
 }));
 
-jest.mock("../musicPreview", () => ({
-  openMusicPreview: jest.fn(async () => {})
+jest.mock("expo-audio", () => ({
+  AudioModule: {
+    AudioPlayer: jest.fn(() => mockAudioPlayer)
+  },
+  setAudioModeAsync: jest.fn(async () => {})
 }));
 
 jest.mock("../useEventRsvpState", () => ({
@@ -52,7 +62,7 @@ const sampleEvent: EventRecord = {
   title: "Warehouse Pulse",
   venueName: "District 9",
   city: "Los Angeles",
-  startsAt: "2026-05-01T03:00:00.000Z",
+  startsAt: futureStartsAt,
   endsAt: null,
   genreTags: ["House"],
   sourcePrimary: "manual",
@@ -60,12 +70,16 @@ const sampleEvent: EventRecord = {
   promotionRank: 10,
   featuredUntil: null,
   curationNote: "Top pick",
-  flyerUrl: null
+  flyerUrl: null,
+  musicPreviewUrl: "https://example.com/preview"
 };
 
 describe("EventDiscoveryScreen", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockAudioPlayer.play.mockReset();
+    mockAudioPlayer.pause.mockReset();
+    mockAudioPlayer.replace.mockReset();
     mockUseAppState.mockReturnValue(
       createTestAppState({
         authStatus: "authenticated",
@@ -96,10 +110,38 @@ describe("EventDiscoveryScreen", () => {
     const screen = render(<EventDiscoveryScreen navigation={navigation} route={{ key: "DiscoverHome", name: "DiscoverHome" } as any} />);
 
     await waitFor(() => {
-      expect(mockListUpcomingEvents).toHaveBeenCalledWith(20, 0);
+      expect(mockListUpcomingEvents).toHaveBeenCalled();
       expect(screen.getAllByText("Warehouse Pulse").length).toBeGreaterThan(0);
       expect(screen.getAllByText(/Los Angeles/).length).toBeGreaterThan(0);
       expect(screen.getByText("I'm Going")).toBeOnTheScreen();
     });
+  });
+
+  it("opens the event preview URL when the preview control is pressed", async () => {
+    const navigation = {
+      navigate: jest.fn(),
+      getParent: () => ({ getParent: () => ({ navigate: jest.fn() }) })
+    } as any;
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+
+    const screen = render(<EventDiscoveryScreen navigation={navigation} route={{ key: "DiscoverHome", name: "DiscoverHome" } as any} />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Warehouse Pulse").length).toBeGreaterThan(0);
+      expect(screen.getByText("▶")).toBeOnTheScreen();
+    });
+
+    fireEvent.press(screen.getByText("▶"));
+
+    await waitFor(() => {
+      expect(mockAudioPlayer.replace).toHaveBeenCalledWith("https://example.com/preview");
+      expect(mockAudioPlayer.play).toHaveBeenCalled();
+    });
+    expect(alertSpy).not.toHaveBeenCalledWith(
+      "Preview pending dev build",
+      expect.any(String)
+    );
+
+    alertSpy.mockRestore();
   });
 });

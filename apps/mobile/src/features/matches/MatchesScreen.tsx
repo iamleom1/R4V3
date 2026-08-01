@@ -17,6 +17,7 @@ import {
 } from "react-native";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
+import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppState } from "../../app/AppProvider";
 import { RemoteImage } from "../../components/RemoteImage";
@@ -24,9 +25,10 @@ import { getSupabaseClient } from "../../lib/supabase";
 import { toUserFacingError } from "../../lib/userFacingErrors";
 import { theme } from "../../theme";
 import type { EventRecord, RSVPStatus } from "../../types/domain";
-import { hasEventCrewChat, listEventAudienceMetrics, listUpcomingEvents, startEventCrewThreadSeed } from "../events/eventRepository";
+import { hasEventCrewChat, listEventAudienceMetrics, listEventCandidatePreview, listUpcomingEvents, resolveSharedEventId, startEventCrewThreadSeed } from "../events/eventRepository";
 import { useCrewVisibilityState } from "../events/useCrewVisibilityState";
 import { useEventRsvpState } from "../events/useEventRsvpState";
+import { expandInterestedGendersForMatching } from "../profile/genderOptions";
 import type { MatchesStackParamList } from "./MatchesNavigator";
 import { createSwipeDecision, listMatchStackCandidates, type MatchCandidate } from "./matchRepository";
 
@@ -90,13 +92,14 @@ const demoCandidates: MatchCandidate[] = [
   }
 ];
 
+const dismissedCrewCandidateIdsByEvent = new Map<string, Set<string>>();
+
 export function MatchesScreen() {
   type TopTab = "for_you" | "matches_hub";
   type MatchInboxTab = "liked" | "likes_you" | "matches";
   type CrewGatewayEvent = Pick<EventRecord, "id" | "title" | "city" | "startsAt" | "genreTags" | "flyerUrl"> & { rsvpStatus: RSVPStatus };
   const SWIPE_THRESHOLD = 110;
   const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
-  const stackHeight = Math.max(410, Math.min(570, SCREEN_HEIGHT - 320));
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<NativeStackNavigationProp<MatchesStackParamList>>();
   const { session, matchFilters, profileDraft } = useAppState();
@@ -124,14 +127,23 @@ export function MatchesScreen() {
   const [isLoadingCrewGateway, setIsLoadingCrewGateway] = useState(true);
   const [crewGatewayMetrics, setCrewGatewayMetrics] = useState<Record<string, { goingCount: number; lookingForCrewCount: number }>>({});
   const [selectedCrewEventId, setSelectedCrewEventId] = useState<string | null>(null);
+  const [resolvedSelectedCrewEventId, setResolvedSelectedCrewEventId] = useState<string | null>(null);
+  const [selectedEventCandidates, setSelectedEventCandidates] = useState<MatchCandidate[]>([]);
+  const [isLoadingSelectedEventCandidates, setIsLoadingSelectedEventCandidates] = useState(false);
   const [hasSeenCrewVisibilityHint, setHasSeenCrewVisibilityHint] = useState(
     Boolean(session?.user?.user_metadata?.crew_visibility_hint_seen)
   );
   const [showCrewVisibilityHint, setShowCrewVisibilityHint] = useState(false);
   const [notifyCrewActivity, setNotifyCrewActivity] = useState(false);
-  const photoStageHeight = Math.max(300, Math.min(520, stackHeight - 12));
   const lastCrewGatewayFetchAtRef = useRef(0);
   const hasLoadedCrewGatewayRef = useRef(false);
+  const isTightCrewLayout = activeTopTab === "for_you" && Boolean(selectedCrewEventId) && !isProfileExpanded;
+  const stackHeight = isTightCrewLayout
+    ? Math.max(330, Math.min(440, SCREEN_HEIGHT - 440))
+    : Math.max(410, Math.min(570, SCREEN_HEIGHT - 320));
+  const photoStageHeight = isTightCrewLayout
+    ? Math.max(268, Math.min(392, stackHeight - 56))
+    : Math.max(300, Math.min(520, stackHeight - 12));
 
   if (Platform.OS === "android" && (UIManager as any).setLayoutAnimationEnabledExperimental) {
     (UIManager as any).setLayoutAnimationEnabledExperimental(true);
@@ -165,12 +177,23 @@ export function MatchesScreen() {
     () => compactGenreLabel(selectedCrewEvent?.genreTags?.[0] ?? null),
     [selectedCrewEvent?.genreTags]
   );
+  const isCrewSelectionHydrating = Boolean(selectedCrewEventId) && (!resolvedSelectedCrewEventId || isLoadingSelectedEventCandidates);
   const crewCandidates = useMemo(() => {
     if (!selectedCrewEvent) return [];
-    return sourceCandidates
-      .filter((candidate) => candidateMatchesCrewEvent(candidate, selectedCrewEvent))
-      .filter((candidate) => candidate.connectionStatus !== "pending_outgoing" && candidate.connectionStatus !== "matched");
-  }, [selectedCrewEvent, sourceCandidates]);
+    const effectiveEventId = resolvedSelectedCrewEventId ?? selectedCrewEvent.id;
+    const dismissedIds = dismissedCrewCandidateIdsByEvent.get(effectiveEventId) ?? new Set<string>();
+    const directEventCandidates = selectedEventCandidates
+      .filter((candidate) => candidateMatchesCrewEvent(candidate, effectiveEventId))
+      .filter((candidate) => !dismissedIds.has(candidate.id));
+    const sameEventCandidates = directEventCandidates.length > 0
+      ? directEventCandidates
+      : sourceCandidates
+          .filter((candidate) => candidateMatchesCrewEvent(candidate, effectiveEventId))
+          .filter((candidate) => !dismissedIds.has(candidate.id));
+    const genderMatchedCandidates = sameEventCandidates.filter((candidate) => candidateMatchesCrewGenderPreference(candidate, profileDraft));
+    const visibleCandidates = genderMatchedCandidates.length > 0 ? genderMatchedCandidates : sameEventCandidates;
+    return [...visibleCandidates].sort(compareCrewCandidatePriority);
+  }, [profileDraft, resolvedSelectedCrewEventId, selectedCrewEvent, selectedEventCandidates, sourceCandidates]);
   const swipe = React.useRef(new Animated.ValueXY()).current;
   const swipeActionLockedRef = React.useRef(false);
   const current = crewCandidates[index] ?? null;
@@ -187,8 +210,9 @@ export function MatchesScreen() {
     matches: matchedProfiles.length
   };
 
-  async function loadCandidates(options?: { refresh?: boolean }) {
+  const loadCandidates = React.useCallback(async (options?: { refresh?: boolean; silent?: boolean }) => {
     const isRefresh = options?.refresh ?? false;
+    const isSilent = options?.silent ?? false;
 
     if (!session?.user?.id) {
       setCandidates([]);
@@ -200,13 +224,17 @@ export function MatchesScreen() {
     }
 
     if (isRefresh) {
-      setIsRefreshing(true);
+      if (!isSilent) {
+        setIsRefreshing(true);
+      }
     } else {
       setIsLoading(true);
     }
 
-    setError(null);
-    setMatchSuccessMessage(null);
+    if (!isSilent) {
+      setError(null);
+      setMatchSuccessMessage(null);
+    }
     setLikedProfiles([]);
     setMatchedProfiles([]);
     setIncomingLikesProfiles(usingDemoFallback ? demoCandidates.slice(1, 3) : []);
@@ -220,23 +248,40 @@ export function MatchesScreen() {
       setCandidates(rows);
       setIndex(0);
     } catch (e) {
-      setError(toUserFacingError(e, "Failed to refresh match stack."));
+      if (!isSilent) {
+        setError(toUserFacingError(e, "Failed to refresh match stack."));
+      }
     } finally {
       setIsLoading(false);
-      setIsRefreshing(false);
+      if (!isSilent) {
+        setIsRefreshing(false);
+      }
     }
-  }
-
-  useEffect(() => {
-    void loadCandidates();
   }, [
     matchFilters.distanceMiles,
     matchFilters.expansionDistanceMiles,
     matchFilters.strictDistance,
-    profileDraft.locationLat,
-    profileDraft.locationLng,
-    session?.user?.id
+    session?.user?.id,
+    usingDemoFallback
   ]);
+
+  useEffect(() => {
+    void loadCandidates();
+  }, [
+    loadCandidates,
+    profileDraft.locationLat,
+    profileDraft.locationLng
+  ]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      if (!session?.user?.id) {
+        return undefined;
+      }
+      void loadCandidates({ refresh: true, silent: true });
+      return undefined;
+    }, [loadCandidates, session?.user?.id])
+  );
 
   const loadCrewGatewayEvents = React.useCallback(async (options?: { showSpinner?: boolean }) => {
     if (!session?.user?.id) {
@@ -329,6 +374,117 @@ export function MatchesScreen() {
       setIndex(0);
     }
   }, [selectedCrewEventId, visibility]);
+
+  useEffect(() => {
+    let active = true;
+
+    async function resolveEventId() {
+      if (!selectedCrewEventId) {
+        setResolvedSelectedCrewEventId(null);
+        return;
+      }
+
+      setResolvedSelectedCrewEventId(null);
+      setSelectedEventCandidates([]);
+      setIsLoadingSelectedEventCandidates(true);
+
+      const resolved = await resolveSharedEventId(selectedCrewEventId);
+      if (active) {
+        setResolvedSelectedCrewEventId(resolved ?? selectedCrewEventId);
+      }
+    }
+
+    void resolveEventId();
+    return () => {
+      active = false;
+    };
+  }, [selectedCrewEventId]);
+
+  const loadSelectedCrewCandidates = React.useCallback(async () => {
+    if (!session?.user?.id || !resolvedSelectedCrewEventId || !selectedCrewEvent) {
+      setSelectedEventCandidates([]);
+      setIsLoadingSelectedEventCandidates(false);
+      return;
+    }
+
+    setIsLoadingSelectedEventCandidates(true);
+    try {
+      const previews = await listEventCandidatePreview(resolvedSelectedCrewEventId, session.user.id, 20);
+      const rows: MatchCandidate[] = previews.map((preview) => ({
+        id: preview.profileId,
+        name: preview.displayName,
+        age: preview.age ?? null,
+        gender: preview.gender ?? null,
+        city: preview.city ?? "City hidden",
+        bio: preview.bio?.trim() || "No bio yet.",
+        vibeTags: preview.vibeTags,
+        eventId: resolvedSelectedCrewEventId,
+        eventName: selectedCrewEvent.title,
+        overlapReason: preview.overlapReason,
+        discoveryLabel: preview.discoveryLabel,
+        softCandidate: preview.softCandidate,
+        connectionStatus: preview.connectionStatus ?? "none",
+        mode: "community",
+        distanceKm: preview.distanceKm ?? null,
+        height: preview.height,
+        education: preview.education,
+        jobTitle: null,
+        soberPreference: null,
+        connectionType: "individual",
+        previousEvents: preview.distanceKm != null ? [`${Math.round(preview.distanceKm)} km away`] : [],
+        profilePhotoUrl: preview.profilePhotoUrl ?? null
+      }));
+      setSelectedEventCandidates(rows);
+    } catch {
+      setSelectedEventCandidates([]);
+    } finally {
+      setIsLoadingSelectedEventCandidates(false);
+    }
+  }, [resolvedSelectedCrewEventId, selectedCrewEvent, session?.user?.id]);
+
+  useEffect(() => {
+    void loadSelectedCrewCandidates();
+  }, [loadSelectedCrewCandidates]);
+
+  useEffect(() => {
+    if (!resolvedSelectedCrewEventId || !session?.user?.id) {
+      return;
+    }
+    void Promise.all([loadCandidates({ refresh: true, silent: true }), loadSelectedCrewCandidates()]);
+  }, [loadCandidates, loadSelectedCrewCandidates, resolvedSelectedCrewEventId, session?.user?.id]);
+
+  useEffect(() => {
+    if (!resolvedSelectedCrewEventId || !session?.user?.id) {
+      return;
+    }
+
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      return;
+    }
+
+    const channel = supabase
+      .channel(`match-stack-event-rsvps:${resolvedSelectedCrewEventId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "event_rsvps",
+          filter: `event_id=eq.${resolvedSelectedCrewEventId}`
+        },
+        () => {
+          void loadCandidates({ refresh: true, silent: true });
+          void loadSelectedCrewCandidates();
+          void loadCrewGatewayEvents({ showSpinner: false });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [loadCandidates, loadCrewGatewayEvents, loadSelectedCrewCandidates, resolvedSelectedCrewEventId, session?.user?.id]);
 
   useEffect(() => {
     setHasSeenCrewVisibilityHint(Boolean(session?.user?.user_metadata?.crew_visibility_hint_seen));
@@ -436,6 +592,12 @@ export function MatchesScreen() {
     }
 
     const currentCandidate = current;
+    const effectiveEventId = currentCandidate.eventId ?? resolvedSelectedCrewEventId ?? selectedCrewEventId;
+    if (effectiveEventId) {
+      const dismissedIds = dismissedCrewCandidateIdsByEvent.get(effectiveEventId) ?? new Set<string>();
+      dismissedIds.add(currentCandidate.id);
+      dismissedCrewCandidateIdsByEvent.set(effectiveEventId, dismissedIds);
+    }
 
     const canPersistSwipe =
       hasRealSession &&
@@ -604,8 +766,13 @@ export function MatchesScreen() {
       contentContainerStyle={[
         styles.container,
         {
-          paddingTop: Math.max(insets.top + 14, 34),
-          paddingBottom: Math.max(insets.bottom + 18, 24),
+          paddingTop: isTightCrewLayout ? Math.max(insets.top + 8, 16) : Math.max(insets.top + 14, 34),
+          paddingBottom:
+            activeTopTab === "for_you" && Boolean(selectedCrewEventId)
+              ? Math.max(insets.bottom + 84, 92)
+              : isTightCrewLayout
+                ? Math.max(insets.bottom + 10, 12)
+                : Math.max(insets.bottom + 18, 24),
           minHeight: SCREEN_HEIGHT
         }
       ]}
@@ -787,110 +954,126 @@ export function MatchesScreen() {
                       </View>
                       <View style={styles.crewGatewayHeroMetricBubble}>
                         <Text style={styles.crewGatewayHeroMetricPrimary}>{goingCount} Going</Text>
-                        <Text style={styles.crewGatewayHeroMetricSecondary}>{candidateCount} looking for crew</Text>
                       </View>
                     </View>
+                    <LinearGradient
+                      colors={["rgba(0,0,0,0)", "rgba(0,0,0,0.08)", "rgba(0,0,0,0.22)", "rgba(0,0,0,0.58)", "rgba(6,6,6,0.92)", "#090909", "#090909"]}
+                      locations={[0, 0.46, 0.62, 0.76, 0.88, 0.96, 1]}
+                      style={styles.crewGatewayOverlayContent}
+                    >
+                      <Text style={styles.crewGatewaySquareTitle} numberOfLines={2}>{event.title}</Text>
+                      <View style={styles.crewGatewayMetaWrap}>
+                        <View style={styles.crewGatewayMetaRow}>
+                          <Text style={styles.crewGatewayMetaIcon}>⌖</Text>
+                          <Text style={styles.crewGatewaySquareMeta}>{event.city || "City TBD"}</Text>
+                        </View>
+                        <View style={styles.crewGatewayMetaRow}>
+                          <Text style={styles.crewGatewayMetaIcon}>◷</Text>
+                          <Text style={styles.crewGatewaySquareMeta}>{formatEventDateShort(event.startsAt)}</Text>
+                        </View>
+                      </View>
+                    </LinearGradient>
                   </View>
 
                   <View style={styles.crewGatewayCardBody}>
-                    <Text style={styles.crewGatewaySquareTitle} numberOfLines={2}>{event.title}</Text>
-                    <View style={styles.crewGatewayMetaWrap}>
-                      <View style={styles.crewGatewayMetaRow}>
-                        <Text style={styles.crewGatewayMetaIcon}>⌖</Text>
-                        <Text style={styles.crewGatewaySquareMeta}>{event.city || "City TBD"}</Text>
-                      </View>
-                      <View style={styles.crewGatewayMetaRow}>
-                        <Text style={styles.crewGatewayMetaIcon}>◷</Text>
-                        <Text style={styles.crewGatewaySquareMeta}>{formatEventDateShort(event.startsAt)}</Text>
-                      </View>
-                    </View>
-
-                    <Pressable
-                      hitSlop={8}
-                      onPress={(pressEvent) => {
-                        pressEvent.stopPropagation?.();
-                        if (!session?.user?.id) {
-                          Alert.alert(
-                            "Sign in required",
-                            "Sign up to appear in event-based matching.",
-                            [
-                              { text: "Cancel", style: "cancel" },
-                              {
-                                text: "Sign in",
-                                onPress: () => {
-                                  const rootNav: any = navigation.getParent()?.getParent();
-                                  rootNav?.navigate?.("Auth");
+                    <View style={styles.crewGatewayCtaRow}>
+                      <Pressable
+                        hitSlop={8}
+                        onPress={(pressEvent) => {
+                          pressEvent.stopPropagation?.();
+                          if (!session?.user?.id) {
+                            Alert.alert(
+                              "Sign in required",
+                              "Sign up to appear in event-based matching.",
+                              [
+                                { text: "Cancel", style: "cancel" },
+                                {
+                                  text: "Sign in",
+                                  onPress: () => {
+                                    const rootNav: any = navigation.getParent()?.getParent();
+                                    rootNav?.navigate?.("Auth");
+                                  }
                                 }
-                              }
-                            ]
-                          );
-                          return;
-                        }
-                        const nextEnabled = !lookingForCrewEnabled;
-                        void (async () => {
-                          const result = await setLooking(event.id, nextEnabled);
-                          if (!result.ok) {
-                            Alert.alert("Couldn’t update crew visibility", result.error);
+                              ]
+                            );
                             return;
                           }
-                          await Promise.all([
-                            loadCandidates({ refresh: true }),
-                            loadCrewGatewayEvents({ showSpinner: false })
-                          ]);
-                        })();
-                        if (nextEnabled && !hasSeenCrewVisibilityHint) {
-                          setShowCrewVisibilityHint(true);
-                          void markCrewVisibilityHintSeen();
-                        }
-                      }}
-                      style={[
-                        styles.crewGatewayLookingBar,
-                        lookingForCrewEnabled && styles.crewGatewayLookingBarActive
-                      ]}
-                    >
-                      <Text style={styles.crewGatewayLookingBarLabel}>Looking for Crew</Text>
-                      <View style={styles.crewGatewayLookingBarRight}>
-                        <View
-                          style={[
-                            styles.crewGatewayLookingBarDot,
-                            lookingForCrewEnabled && styles.crewGatewayLookingBarDotActive
-                          ]}
-                        />
-                        <Text
-                          style={[
-                            styles.crewGatewayLookingBarValue,
-                            lookingForCrewEnabled && styles.crewGatewayLookingBarValueActive
-                          ]}
-                        >
-                          {lookingForCrewEnabled ? "On" : "Off"}
-                        </Text>
-                      </View>
-                    </Pressable>
+                          const nextEnabled = !lookingForCrewEnabled;
+                          void (async () => {
+                            const result = await setLooking(event.id, nextEnabled);
+                            if (!result.ok) {
+                              Alert.alert("Couldn’t update crew visibility", result.error);
+                              return;
+                            }
+                            await Promise.all([
+                              loadCandidates({ refresh: true, silent: true }),
+                              loadCrewGatewayEvents({ showSpinner: false })
+                            ]);
+                          })();
+                          if (nextEnabled && !hasSeenCrewVisibilityHint) {
+                            setShowCrewVisibilityHint(true);
+                            void markCrewVisibilityHintSeen();
+                          }
+                        }}
+                        style={[
+                          styles.crewGatewayLookingBar,
+                          lookingForCrewEnabled && styles.crewGatewayLookingBarActive
+                        ]}
+                      >
+                        <Text style={styles.crewGatewayLookingBarLabel} numberOfLines={1}>Looking for Crew</Text>
+                        <View style={styles.crewGatewayLookingBarRight}>
+                          <Text
+                            style={[
+                              styles.crewGatewayLookingBarValue,
+                              lookingForCrewEnabled && styles.crewGatewayLookingBarValueActive
+                            ]}
+                          >
+                            {lookingForCrewEnabled ? "On" : "Off"}
+                          </Text>
+                          <View
+                            style={[
+                              styles.crewGatewayLookingBarSwitch,
+                              lookingForCrewEnabled && styles.crewGatewayLookingBarSwitchActive
+                            ]}
+                          >
+                            <View
+                              style={[
+                                styles.crewGatewayLookingBarSwitchKnob,
+                                lookingForCrewEnabled && styles.crewGatewayLookingBarSwitchKnobActive
+                              ]}
+                            />
+                          </View>
+                        </View>
+                      </Pressable>
 
-                    <View
-                      style={[
-                        styles.crewGatewayOpenBar,
-                        canOpenMatching && styles.crewGatewayOpenBarActive
-                      ]}
-                    >
+                      <View
+                        style={[
+                          styles.crewGatewayOpenBar,
+                          canOpenMatching && styles.crewGatewayOpenBarActive
+                        ]}
+                      >
                         <Text
                           style={[
                             styles.crewGatewayOpenBarText,
                             canOpenMatching && styles.crewGatewayOpenBarTextActive
                           ]}
+                          numberOfLines={1}
                         >
-                        {!lookingForCrewEnabled ? "Turn on Looking for crew to open matching" : "Open crew matching"}
-                      </Text>
-                      <Text
-                        style={[
-                          styles.crewGatewayOpenBarArrow,
-                          canOpenMatching && styles.crewGatewayOpenBarTextActive
-                        ]}
-                      >
-                        ›
-                      </Text>
+                          Start Matching
+                        </Text>
+                        <Text
+                          style={[
+                            styles.crewGatewayOpenBarArrow,
+                            canOpenMatching && styles.crewGatewayOpenBarTextActive
+                          ]}
+                        >
+                          ›
+                        </Text>
+                      </View>
                     </View>
+                  </View>
 
+                  <View style={styles.crewGatewayCardFooter}>
                     <Pressable
                       hitSlop={8}
                       onPress={(pressEvent) => {
@@ -922,18 +1105,18 @@ export function MatchesScreen() {
         )}
       </View>
       ) : (
-      <View style={styles.stackShell}>
-        <View style={styles.crewStackHeader}>
+      <View style={[styles.stackShell, isTightCrewLayout && styles.stackShellTight]}>
+        <View style={[styles.crewStackHeader, isTightCrewLayout && styles.crewStackHeaderTight]}>
           <Pressable style={styles.crewBackChip} onPress={() => setSelectedCrewEventId(null)}>
             <Text style={styles.crewBackChipText}>← Events</Text>
           </Pressable>
-          <Text style={styles.crewStackHeaderTitle}>
+          <Text style={[styles.crewStackHeaderTitle, isTightCrewLayout && styles.crewStackHeaderTitleTight]}>
             {selectedCrewEvent?.title ?? "Crew Matching"}
           </Text>
           <View style={styles.crewBackChipGhost} />
         </View>
-        <View style={[styles.stackArea, { minHeight: stackHeight }]}>
-          {isLoading ? (
+        <View style={[styles.stackArea, isTightCrewLayout && styles.stackAreaTight, { minHeight: stackHeight }]}>
+          {isCrewSelectionHydrating ? (
             <View style={styles.loadingBlock}>
               <ActivityIndicator color={theme.colors.accent} />
               <Text style={styles.body}>Loading match stack...</Text>
@@ -976,29 +1159,30 @@ export function MatchesScreen() {
                 {!current.profilePhotoUrl ? <View style={styles.stageBeamLeft} /> : null}
                 {!current.profilePhotoUrl ? <View style={styles.stageBeamRight} /> : null}
                 <View style={styles.photoOverlay}>
-                  <View pointerEvents="none" style={styles.photoBottomFadeSoft} />
-                  <View pointerEvents="none" style={styles.photoBottomFadeStrong} />
                   <View style={styles.photoTopMeta}>
-                    <View style={styles.eventPill}>
-                      <Text style={styles.eventPillText}>{selectedCrewEventGenreLabel}</Text>
+                    <View style={[styles.eventPill, isTightCrewLayout && styles.eventPillTight]}>
+                      <Text style={[styles.eventPillText, isTightCrewLayout && styles.eventPillTextTight]}>{selectedCrewEventGenreLabel}</Text>
                     </View>
-                    <View style={styles.photoModePill}>
-                      <Text style={styles.photoModePillText}>{current.mode}</Text>
+                    <View style={[styles.photoModePill, isTightCrewLayout && styles.photoModePillTight]}>
+                      <Text style={[styles.photoModePillText, isTightCrewLayout && styles.photoModePillTextTight]}>{current.mode}</Text>
                     </View>
                   </View>
 
                   <View style={styles.photoBottomOverlay}>
-                    <View style={styles.collapsedCardMeta}>
-                      <View style={styles.collapsedCardMetaMain}>
-                        <Text style={styles.photoTitle}>
-                          {current.name}{current.age ? `, ${current.age}` : ""}
+                    <View style={styles.collapsedBottomBar}>
+                      <View style={styles.collapsedBottomBarMain}>
+                        <View style={styles.photoTitleRow}>
+                          <Text style={styles.photoTitle}>
+                            {current.name}{current.age ? `, ${current.age}` : ""}
+                          </Text>
+                          <Text style={styles.photoVerifiedMark}>✦</Text>
+                        </View>
+                        <Text style={styles.collapsedBottomMeta} numberOfLines={1}>
+                          {current.city} • {crewSizePreference(current)}
                         </Text>
-                        <Text style={styles.photoIntentLine}>{matchIntentLine(current)}</Text>
-                        <Text style={styles.photoSubtitle}>{current.city}</Text>
-                        <Text style={styles.photoDistance}>{formatDistanceAway(current)}</Text>
                       </View>
-                      <Pressable onPress={() => setIsProfileExpanded((v) => !v)} style={styles.inlineExpandChip}>
-                        <Text style={styles.inlineExpandChipText}>{isProfileExpanded ? "Close" : "View Profile ↓"}</Text>
+                      <Pressable onPress={() => setIsProfileExpanded((v) => !v)} style={styles.bottomBarExpandChip}>
+                        <Text style={styles.bottomBarExpandChipText}>{isProfileExpanded ? "Close" : "View Profile"}</Text>
                       </Pressable>
                     </View>
                   </View>
@@ -1046,7 +1230,7 @@ export function MatchesScreen() {
                 </View>
               ) : null}
             </Animated.View>
-          ) : (
+          ) : isCrewSelectionHydrating ? null : (
             <View style={styles.emptyCard}>
               <EmptyCrewRadar />
               <Text style={styles.emptyTitle}>You&apos;re early.</Text>
@@ -1080,11 +1264,13 @@ export function MatchesScreen() {
       )}
 
       {activeTopTab === "for_you" && Boolean(selectedCrewEventId) ? (
-        <Text style={styles.contextLabelText}>{current?.discoveryLabel ?? (current ? "Also going to this event" : "Going to the same event")}</Text>
+        <Text style={[styles.contextLabelText, isTightCrewLayout && styles.contextLabelTextTight]}>
+          {current?.discoveryLabel ?? (current ? "Also going to this event" : "Going to the same event")}
+        </Text>
       ) : null}
 
       {activeTopTab === "for_you" && !isProfileExpanded && Boolean(selectedCrewEventId) ? (
-      <View style={styles.actionDock}>
+      <View style={[styles.actionDock, isTightCrewLayout && styles.actionDockTight]}>
         <Pressable
           style={[styles.dockActionButton, styles.dockActionButtonGhost, isSubmitting && styles.actionDisabled]}
           onPress={() => animateOutAndDecide("pass")}
@@ -1092,7 +1278,7 @@ export function MatchesScreen() {
         >
           <Text style={styles.dockActionButtonGhostText}>Skip</Text>
         </Pressable>
-        <Pressable style={[styles.dockMiniButton, styles.dockMiniButtonMid]}>
+        <Pressable style={[styles.dockMiniButton, styles.dockMiniButtonMid, isTightCrewLayout && styles.dockMiniButtonTight]}>
           <View style={styles.dockMiniRadarWrap}>
             <View style={styles.dockMiniRadarRingOuter} />
             <View style={styles.dockMiniRadarRingInner} />
@@ -1149,6 +1335,14 @@ function matchIntentLine(candidate: MatchCandidate | null) {
   return `Interested • ${crewSizePreference(candidate)}`;
 }
 
+function collapsedBioPreview(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return "House heads, late nights, good energy.";
+  }
+  return trimmed;
+}
+
 function formatSober(value: MatchCandidate["soberPreference"] | undefined) {
   if (value === "sober") return "Sober";
   if (value === "non_sober") return "Non-sober";
@@ -1194,11 +1388,39 @@ function normalizeMatchEventKey(value: string | null | undefined) {
 
 function candidateMatchesCrewEvent(
   candidate: MatchCandidate,
-  event: Pick<EventRecord, "id" | "title">
+  eventId: string
 ) {
-  return Boolean(candidate.eventId && candidate.eventId === event.id);
+  return Boolean(candidate.eventId && candidate.eventId === eventId);
 }
 
+function candidateMatchesCrewGenderPreference(
+  candidate: Pick<MatchCandidate, "gender">,
+  profileDraft: { interestedGenders: string[] }
+) {
+  const interested = expandInterestedGendersForMatching(profileDraft.interestedGenders);
+  if (!interested) {
+    return true;
+  }
+
+  const candidateGender = (candidate.gender ?? "").trim().toLowerCase();
+  if (!candidateGender) {
+    return false;
+  }
+
+  return interested.has(candidateGender);
+}
+
+function compareCrewCandidatePriority(a: MatchCandidate, b: MatchCandidate) {
+  return crewCandidatePriority(a.connectionStatus) - crewCandidatePriority(b.connectionStatus);
+}
+
+function crewCandidatePriority(status: MatchCandidate["connectionStatus"]) {
+  if (status === "pending_incoming") return 0;
+  if (status === "none") return 1;
+  if (status === "pending_outgoing") return 2;
+  if (status === "matched") return 3;
+  return 4;
+}
 
 function compactGenreLabel(value: string | null | undefined) {
   const raw = (value ?? "").trim();
@@ -1339,17 +1561,17 @@ function crewGatewayPalette(index: number) {
 const styles = StyleSheet.create({
   screenRoot: {
     flex: 1,
-    backgroundColor: "#11100D"
+    backgroundColor: theme.colors.canvas
   },
   scroll: {
     flex: 1,
-    backgroundColor: "#11100D"
+    backgroundColor: theme.colors.canvas
   },
   container: {
     flexGrow: 1,
     paddingHorizontal: 12,
     gap: 10,
-    backgroundColor: "#11100D"
+    backgroundColor: theme.colors.canvas
   },
   crewHintOverlay: {
     ...StyleSheet.absoluteFillObject,
@@ -1466,10 +1688,15 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.09)",
-    backgroundColor: "#1A1712",
+    backgroundColor: theme.colors.surface,
     padding: 8,
     minHeight: 0,
     marginTop: 6
+  },
+  stackShellTight: {
+    marginTop: 0,
+    padding: 5,
+    borderRadius: 18
   },
   crewStackHeader: {
     flexDirection: "row",
@@ -1479,6 +1706,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingTop: 4,
     paddingBottom: 8
+  },
+  crewStackHeaderTight: {
+    paddingTop: 0,
+    paddingBottom: 2
   },
   crewBackChip: {
     minWidth: 74,
@@ -1505,6 +1736,10 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: "center"
   },
+  crewStackHeaderTitleTight: {
+    fontSize: 13,
+    lineHeight: 16
+  },
   body: {
     color: "rgba(255,249,239,0.78)",
     ...theme.type.body
@@ -1530,7 +1765,7 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.09)",
-    backgroundColor: "#1A1712",
+    backgroundColor: theme.colors.surface,
     padding: 12,
     marginTop: 6,
     gap: 10
@@ -1576,8 +1811,8 @@ const styles = StyleSheet.create({
     width: "100%",
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
-    backgroundColor: "#151311",
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "#090909",
     overflow: "hidden"
   },
   crewGatewaySquareCardPressed: {
@@ -1593,17 +1828,16 @@ const styles = StyleSheet.create({
     opacity: 0.82
   },
   crewGatewayCardShellArt: {
-    height: 188,
+    minHeight: 272,
     overflow: "hidden",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20
+    borderRadius: 20
   },
   crewGatewayFlyerImage: {
     ...StyleSheet.absoluteFillObject
   },
   crewGatewayFlyerOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(9,10,14,0.18)"
+    backgroundColor: "rgba(6,6,8,0.18)"
   },
   crewGatewayGlowA: {
     position: "absolute",
@@ -1687,8 +1921,8 @@ const styles = StyleSheet.create({
   crewGatewayHeroGenreChip: {
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.16)",
-    backgroundColor: "rgba(8,8,8,0.28)",
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(18,18,18,0.48)",
     paddingHorizontal: 11,
     paddingVertical: 6
   },
@@ -1699,38 +1933,48 @@ const styles = StyleSheet.create({
     letterSpacing: 0.9
   },
   crewGatewayHeroMetricBubble: {
-    borderRadius: 18,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
-    backgroundColor: "rgba(10,9,12,0.26)",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(18,18,18,0.44)",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
     alignItems: "flex-end",
-    minWidth: 118
+    minWidth: 112
   },
   crewGatewayHeroMetricPrimary: {
     color: "rgba(255,249,239,0.92)",
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: "800"
   },
-  crewGatewayHeroMetricSecondary: {
-    color: "rgba(255,249,239,0.68)",
-    fontSize: 10,
-    fontWeight: "600"
+  crewGatewayOverlayContent: {
+    marginTop: "auto",
+    paddingHorizontal: 14,
+    paddingTop: 96,
+    paddingBottom: 34,
+    gap: 8
   },
   crewGatewayCardBody: {
-    backgroundColor: "#151311",
-    padding: 14,
-    gap: 10
+    backgroundColor: "#090909",
+    paddingHorizontal: 14,
+    paddingTop: 0,
+    paddingBottom: 10,
+    marginTop: -8
+  },
+  crewGatewayCardFooter: {
+    paddingHorizontal: 14,
+    paddingBottom: 14,
+    paddingTop: 0,
+    backgroundColor: "#090909"
   },
   crewGatewaySquareTitle: {
     color: "#FFF8EE",
-    fontSize: 24,
-    lineHeight: 28,
+    fontSize: 17,
+    lineHeight: 20,
     fontWeight: "800"
   },
   crewGatewayMetaWrap: {
-    gap: 6
+    gap: 4
   },
   authNoticeStrip: {
     borderRadius: 14,
@@ -1770,96 +2014,165 @@ const styles = StyleSheet.create({
   },
   crewGatewayMetaIcon: {
     color: "rgba(204,123,255,0.82)",
-    fontSize: 15,
-    lineHeight: 16
+    fontSize: 14,
+    lineHeight: 14
   },
   crewGatewaySquareMeta: {
-    color: "rgba(255,249,239,0.78)",
-    fontSize: 13,
+    color: "rgba(255,249,239,0.84)",
+    fontSize: 11,
     fontWeight: "600"
   },
+  crewGatewayCtaRow: {
+    flexDirection: "column",
+    gap: 8,
+    marginTop: 0
+  },
+  crewGatewayCtaButton: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 12
+  },
+  crewGatewayCtaButtonGhost: {
+    borderColor: "#D65B2C",
+    backgroundColor: "#2A140D"
+  },
+  crewGatewayCtaButtonGhostActive: {
+    borderColor: "#D65B2C",
+    backgroundColor: "#341810"
+  },
+  crewGatewayCtaButtonGhostText: {
+    color: "#D97849",
+    fontSize: 12,
+    fontWeight: "700"
+  },
+  crewGatewayCtaButtonGhostTextActive: {
+    color: "#FF9E6E"
+  },
+  crewGatewayCtaButtonPrimary: {
+    borderColor: "rgba(62,83,144,0.40)",
+    backgroundColor: "rgba(12,15,28,0.90)"
+  },
+  crewGatewayCtaButtonPrimaryActive: {
+    borderColor: "rgba(105,132,219,0.48)",
+    backgroundColor: "rgba(18,24,40,0.96)"
+  },
+  crewGatewayCtaButtonPrimaryDisabled: {
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(24,24,24,0.74)"
+  },
+  crewGatewayCtaButtonPrimaryText: {
+    color: "#FFF8EE",
+    fontSize: 12,
+    fontWeight: "800"
+  },
+  crewGatewayCtaButtonPrimaryTextDisabled: {
+    color: "rgba(255,249,239,0.72)"
+  },
   crewGatewayLookingBar: {
+    width: "100%",
+    minHeight: 46,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 8,
-    borderRadius: 16,
+    borderRadius: 15,
     borderWidth: 1,
-    borderColor: "rgba(255,168,92,0.16)",
-    backgroundColor: "rgba(255,255,255,0.02)",
+    borderColor: "rgba(242,106,46,0.78)",
+    backgroundColor: "#0C0C0C",
     paddingHorizontal: 14,
-    paddingVertical: 12
+    paddingVertical: 10
   },
   crewGatewayLookingBarActive: {
-    borderColor: "rgba(211,92,51,0.22)",
-    backgroundColor: "rgba(211,92,51,0.04)"
+    borderColor: "#F26A2E",
+    backgroundColor: "#0C0C0C"
   },
   crewGatewayLookingBarLabel: {
-    color: "#F8C386",
-    fontSize: 14,
-    fontWeight: "800"
+    color: "#F7C894",
+    fontSize: 12,
+    fontWeight: "800",
+    flexShrink: 1,
+    paddingRight: 8
   },
   crewGatewayLookingBarRight: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8
-  },
-  crewGatewayLookingBarDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.35)"
-  },
-  crewGatewayLookingBarDotActive: {
-    backgroundColor: "#D35C33"
+    gap: 10,
+    flexShrink: 0
   },
   crewGatewayLookingBarValue: {
-    color: "rgba(255,249,239,0.76)",
-    fontSize: 13,
+    color: "rgba(255,249,239,0.72)",
+    fontSize: 12,
     fontWeight: "800"
   },
   crewGatewayLookingBarValueActive: {
     color: "#FFF8EE"
   },
+  crewGatewayLookingBarSwitch: {
+    width: 38,
+    height: 22,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.16)",
+    paddingHorizontal: 3,
+    justifyContent: "center"
+  },
+  crewGatewayLookingBarSwitchActive: {
+    backgroundColor: "#F26A2E"
+  },
+  crewGatewayLookingBarSwitchKnob: {
+    width: 16,
+    height: 16,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.62)"
+  },
+  crewGatewayLookingBarSwitchKnobActive: {
+    backgroundColor: "#FFF8EE",
+    alignSelf: "flex-end"
+  },
   crewGatewayOpenBar: {
-    borderRadius: 16,
+    width: "100%",
+    minHeight: 46,
+    borderRadius: 15,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(255,255,255,0.02)",
+    borderColor: "#7A43F3",
+    backgroundColor: "#24113D",
     paddingHorizontal: 14,
-    paddingVertical: 14,
+    paddingVertical: 10,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 8
   },
   crewGatewayOpenBarActive: {
-    borderColor: "rgba(147,98,255,0.22)",
-    backgroundColor: "rgba(147,98,255,0.06)"
+    borderColor: "#7A43F3",
+    backgroundColor: "#24113D"
   },
   crewGatewayOpenBarText: {
-    color: "rgba(255,249,239,0.66)",
-    fontSize: 14,
-    fontWeight: "700",
-    flex: 1
+    color: "#E3D0FF",
+    fontSize: 12,
+    fontWeight: "800",
+    flex: 1,
+    lineHeight: 14
   },
   crewGatewayOpenBarTextActive: {
-    color: "#D9C0FF"
+    color: "#E3D0FF"
   },
   crewGatewayOpenBarArrow: {
-    color: "rgba(255,249,239,0.56)",
-    fontSize: 26,
-    lineHeight: 24,
-    fontWeight: "500"
+    color: "#E3D0FF",
+    fontSize: 18,
+    lineHeight: 18,
+    fontWeight: "700"
   },
   crewGatewayLeaveAction: {
     alignSelf: "flex-start",
-    paddingTop: 2,
+    paddingTop: 4,
     paddingHorizontal: 2,
     paddingBottom: 2
   },
   crewGatewayLeaveActionText: {
-    color: "rgba(255,249,239,0.52)",
+    color: "rgba(255,249,239,0.44)",
     fontSize: 12,
     lineHeight: 16,
     fontWeight: "600"
@@ -1958,6 +2271,9 @@ const styles = StyleSheet.create({
     flex: 1,
     position: "relative",
     paddingTop: 8
+  },
+  stackAreaTight: {
+    paddingTop: 2
   },
   loadingBlock: {
     minHeight: 120,
@@ -2072,22 +2388,6 @@ const styles = StyleSheet.create({
     padding: 14,
     justifyContent: "space-between"
   },
-  photoBottomFadeSoft: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: "52%",
-    backgroundColor: "rgba(7,7,8,0.16)"
-  },
-  photoBottomFadeStrong: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: "34%",
-    backgroundColor: "rgba(7,7,8,0.52)"
-  },
   photoTopMeta: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -2103,10 +2403,17 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     maxWidth: "72%"
   },
+  eventPillTight: {
+    paddingHorizontal: 8,
+    paddingVertical: 5
+  },
   eventPillText: {
     color: "#FFF8EE",
     ...theme.type.caption,
     fontWeight: "700"
+  },
+  eventPillTextTight: {
+    fontSize: 11
   },
   photoModePill: {
     alignSelf: "flex-end",
@@ -2117,32 +2424,131 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 5
   },
+  photoModePillTight: {
+    paddingHorizontal: 7,
+    paddingVertical: 4
+  },
   photoModePillText: {
     color: "#FFF8EE",
     fontSize: 11,
     fontWeight: "700",
     textTransform: "capitalize"
   },
+  photoModePillTextTight: {
+    fontSize: 10
+  },
   photoBottomOverlay: {
     gap: 0,
-    paddingHorizontal: 14,
-    paddingTop: 34,
-    paddingBottom: 14,
-    marginHorizontal: -14,
-    marginBottom: -14,
+    paddingHorizontal: 0,
+    paddingTop: 12,
+    paddingBottom: 0,
     backgroundColor: "transparent"
+  },
+  collapsedBottomBar: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingHorizontal: 18,
+    paddingTop: 28,
+    paddingBottom: 18,
+    borderBottomLeftRadius: 28,
+    borderBottomRightRadius: 28,
+    backgroundColor: "rgba(7,7,8,0.36)"
+  },
+  collapsedBottomBarMain: {
+    flex: 1,
+    gap: 4
+  },
+  photoTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8
   },
   photoTitle: {
     color: "#FFF8EE",
     ...theme.type.titleMd
   },
+  photoVerifiedMark: {
+    color: "#FF6A21",
+    fontSize: 18,
+    fontWeight: "900",
+    lineHeight: 20
+  },
+  collapsedBottomMeta: {
+    color: "rgba(255,249,239,0.8)",
+    fontSize: 13,
+    fontWeight: "600"
+  },
+  photoMetaLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 6
+  },
+  bottomBarExpandChip: {
+    alignSelf: "flex-end",
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+    backgroundColor: "rgba(255,255,255,0.06)",
+    paddingHorizontal: 14,
+    paddingVertical: 9
+  },
+  bottomBarExpandChipText: {
+    color: "#FFF8EE",
+    fontSize: 12,
+    fontWeight: "800"
+  },
+  statusChipRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8
+  },
+  statusChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.05)",
+    paddingHorizontal: 10,
+    paddingVertical: 6
+  },
+  statusChipIcon: {
+    color: "#C96BFF",
+    fontSize: 12,
+    fontWeight: "700"
+  },
+  statusChipText: {
+    color: "#FFF8EE",
+    fontSize: 13,
+    fontWeight: "700"
+  },
+  photoMetaIcon: {
+    color: "rgba(255,255,255,0.8)",
+    fontSize: 12,
+    fontWeight: "700"
+  },
+  photoMetaDot: {
+    color: "rgba(255,249,239,0.42)",
+    fontSize: 12,
+    fontWeight: "700"
+  },
   photoSubtitle: {
-    color: "rgba(255,249,239,0.75)",
+    color: "rgba(255,249,239,0.8)",
     ...theme.type.caption
   },
   photoDistance: {
-    color: "rgba(255,249,239,0.75)",
+    color: "rgba(255,249,239,0.8)",
     ...theme.type.caption
+  },
+  photoMetaDivider: {
+    height: 1,
+    marginTop: 4,
+    backgroundColor: "rgba(255,255,255,0.1)"
   },
   emptyCard: {
     flex: 1,
@@ -2348,34 +2754,43 @@ const styles = StyleSheet.create({
     fontWeight: "600"
   },
   collapsedCardMeta: {
-    gap: 10
+    alignSelf: "flex-start",
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 22,
+    backgroundColor: "rgba(7,7,8,0.48)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    maxWidth: "60%",
+    marginBottom: 4
   },
   collapsedCardMetaMain: {
-    gap: 4
+    gap: 5
   },
   photoIntentLine: {
-    color: "rgba(255,249,239,0.72)",
-    fontSize: 12,
+    color: "rgba(255,249,239,0.8)",
+    fontSize: 13,
     fontWeight: "700"
   },
   inlineExpandChip: {
     alignSelf: "flex-start",
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
+    borderColor: "rgba(255,255,255,0.16)",
     backgroundColor: "rgba(255,255,255,0.03)",
-    paddingHorizontal: 10,
-    paddingVertical: 6
+    paddingHorizontal: 14,
+    paddingVertical: 8
   },
   inlineExpandChipText: {
     color: "#FFF8EE",
-    fontSize: 11,
-    fontWeight: "700"
+    fontSize: 12,
+    fontWeight: "800"
   },
   collapsedBio: {
     color: "rgba(255,249,239,0.84)",
-    lineHeight: 19,
-    marginTop: 4
+    fontSize: 13,
+    lineHeight: 21
   },
   profileModalScreen: {
     flex: 1,
@@ -2542,12 +2957,21 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 14
   },
+  actionDockTight: {
+    marginTop: 2,
+    borderRadius: 18,
+    padding: 6,
+    gap: 8
+  },
   contextLabelText: {
     color: "rgba(255,245,236,0.82)",
     ...theme.type.caption,
     fontWeight: "700",
     textAlign: "center",
     marginTop: 6
+  },
+  contextLabelTextTight: {
+    marginTop: 2
   },
   dockButton: {
     width: 62,
@@ -2621,6 +3045,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.12)",
     backgroundColor: "rgba(255,255,255,0.04)"
+  },
+  dockMiniButtonTight: {
+    width: 42,
+    height: 42
   },
   dockMiniButtonMid: {
     transform: [{ translateY: -2 }]

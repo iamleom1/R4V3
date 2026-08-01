@@ -1,6 +1,6 @@
 # Terms of Service
 
-Last updated: April 23, 2026
+Last updated: June 10, 2026
 
 ## Acceptance
 
@@ -33,4 +33,7 @@ We may suspend or terminate accounts for policy violations, abuse, fraud, or saf
 
 ## Contact
 
-For closed beta support, use the TestFlight feedback channel or the support email listed in App Store Connect.
+For terms or support questions, contact:
+
+- support email: `support@YOUR_DOMAIN`
+- support page: `https://YOUR_DOMAIN/support`

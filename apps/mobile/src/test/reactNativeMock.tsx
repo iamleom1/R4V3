@@ -63,7 +63,9 @@ export const Alert = {
 };
 
 export const Linking = {
-  openSettings: jest.fn(async () => undefined)
+  openSettings: jest.fn(async () => undefined),
+  getInitialURL: jest.fn(async () => null),
+  addEventListener: jest.fn(() => ({ remove: jest.fn() }))
 };
 
 export const Dimensions = {

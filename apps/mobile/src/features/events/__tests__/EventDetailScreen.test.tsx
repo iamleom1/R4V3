@@ -11,10 +11,14 @@ const mockSetRsvp = jest.fn();
 const mockRefreshRsvps = jest.fn();
 const mockSetLooking = jest.fn();
 const mockListEventAudienceMetrics = jest.fn();
-const mockListEventCrewRooms = jest.fn();
+const mockListEventAttendeePreview = jest.fn();
 const mockHasEventCrewChat = jest.fn();
-const mockJoinEventCrewRoom = jest.fn();
-const mockStartEventCrewThreadSeed = jest.fn();
+const mockGetEventSourceUrl = jest.fn();
+const mockAudioPlayer = {
+  play: jest.fn(),
+  pause: jest.fn(),
+  replace: jest.fn()
+};
 let mockRsvpMap: Record<string, "going" | "none"> = { "event-1": "none" };
 let mockVisibilityMap: Record<string, boolean> = { "event-1": false };
 
@@ -30,8 +34,11 @@ jest.mock("../../../components/RemoteImage", () => ({
   RemoteImage: () => null
 }));
 
-jest.mock("../musicPreview", () => ({
-  openMusicPreview: jest.fn(async () => {})
+jest.mock("expo-audio", () => ({
+  AudioModule: {
+    AudioPlayer: jest.fn(() => mockAudioPlayer)
+  },
+  setAudioModeAsync: jest.fn(async () => {})
 }));
 
 jest.mock("../useEventRsvpState", () => ({
@@ -50,11 +57,10 @@ jest.mock("../useCrewVisibilityState", () => ({
 }));
 
 jest.mock("../eventRepository", () => ({
+  getEventSourceUrl: (...args: unknown[]) => mockGetEventSourceUrl(...args),
   hasEventCrewChat: (...args: unknown[]) => mockHasEventCrewChat(...args),
-  joinEventCrewRoom: (...args: unknown[]) => mockJoinEventCrewRoom(...args),
-  listEventAudienceMetrics: (...args: unknown[]) => mockListEventAudienceMetrics(...args),
-  listEventCrewRooms: (...args: unknown[]) => mockListEventCrewRooms(...args),
-  startEventCrewThreadSeed: (...args: unknown[]) => mockStartEventCrewThreadSeed(...args)
+  listEventAttendeePreview: (...args: unknown[]) => mockListEventAttendeePreview(...args),
+  listEventAudienceMetrics: (...args: unknown[]) => mockListEventAudienceMetrics(...args)
 }));
 
 const event: EventRecord = {
@@ -70,12 +76,16 @@ const event: EventRecord = {
   promotionRank: 10,
   featuredUntil: null,
   curationNote: null,
-  flyerUrl: null
+  flyerUrl: null,
+  musicPreviewUrl: "https://example.com/preview"
 };
 
 describe("EventDetailScreen", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockAudioPlayer.play.mockReset();
+    mockAudioPlayer.pause.mockReset();
+    mockAudioPlayer.replace.mockReset();
     mockUseAppState.mockReturnValue(
       createTestAppState({
         authStatus: "authenticated",
@@ -91,10 +101,9 @@ describe("EventDetailScreen", () => {
     mockListEventAudienceMetrics
       .mockResolvedValueOnce({ "event-1": { goingCount: 4, lookingForCrewCount: 1 } })
       .mockResolvedValue({ "event-1": { goingCount: 5, lookingForCrewCount: 2 } });
-    mockListEventCrewRooms.mockResolvedValue([]);
+    mockListEventAttendeePreview.mockResolvedValue([]);
     mockHasEventCrewChat.mockResolvedValue(false);
-    mockJoinEventCrewRoom.mockResolvedValue({ ok: true });
-    mockStartEventCrewThreadSeed.mockResolvedValue({ ok: true, roomId: "room-1", title: "Main Crew" });
+    mockGetEventSourceUrl.mockResolvedValue(null);
   });
 
   it("writes RSVP changes for a signed-in user", async () => {
@@ -114,7 +123,6 @@ describe("EventDetailScreen", () => {
 
     await waitFor(() => {
       expect(mockListEventAudienceMetrics).toHaveBeenCalledWith(["event-1"]);
-      expect(mockListEventCrewRooms).toHaveBeenCalledWith("event-1", "user-1");
       expect(screen.getByText("I'm Going")).toBeOnTheScreen();
       expect(screen.queryByText("Find a Crew")).toBeNull();
     });
@@ -177,12 +185,11 @@ describe("EventDetailScreen", () => {
     );
 
     await waitFor(() => {
-      expect(mockListEventCrewRooms).toHaveBeenCalledWith("event-1", "user-1");
       expect(screen.getAllByText("Going").length).toBeGreaterThan(0);
-      expect(screen.getByText("Find a Crew")).toBeOnTheScreen();
+      expect(screen.getByText("Find Crew")).toBeOnTheScreen();
     });
 
-    fireEvent.press(screen.getByText("Find a Crew"));
+    fireEvent.press(screen.getByText("Find Crew"));
 
     await waitFor(() => {
       expect(mockSetLooking).toHaveBeenCalledWith("event-1", true);
@@ -215,4 +222,5 @@ describe("EventDetailScreen", () => {
       expect(screen.queryByText("City")).toBeNull();
     });
   });
+
 });

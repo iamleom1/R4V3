@@ -14,7 +14,7 @@ import { matchPreferenceOptions, normalizeStoredInterestedGenders, profileGender
 import { validateProfileDraft } from "../profile/profileDraftService";
 
 const vibeOptions = ["Solo-friendly", "Small crew", "Open crew", "Stick together", "Chill meetup", "High energy", "Afters", "Pregame", "Sober-friendly"];
-const genreOptions = ["House", "Tech House", "Techno", "Melodic Techno", "Dubstep", "Drum & Bass", "Progressive"];
+const genreOptions = ["House", "Tech House", "Techno", "Hard Techno", "Dubstep", "Drum & Bass", "RAVE", "EDM"];
 const MIN_AGE = 18;
 const MAX_AGE = 50;
 
@@ -138,6 +138,7 @@ export function OnboardingScreen() {
       contentContainerStyle={styles.container}
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+      automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
     >
       <View style={styles.hero}>
         <Text style={styles.eyebrow}>Onboarding</Text>
@@ -175,6 +176,8 @@ export function OnboardingScreen() {
                 mode="date"
                 display={Platform.OS === "ios" ? "spinner" : "default"}
                 maximumDate={getAdultMaximumDate()}
+                minimumDate={new Date("1940-01-01T12:00:00")}
+                textColor={Platform.OS === "ios" ? "#FFF8EE" : undefined}
                 onChange={handleBirthdateChange}
               />
               {Platform.OS === "ios" ? (
@@ -290,8 +293,8 @@ export function OnboardingScreen() {
           </Text>
 
           <ToggleRow
-            label="Open to Crew Matching"
-            description="Appear in crew discovery when your profile is ready"
+            label="Appear in Crew Discovery"
+            description="Shown when you opt into crewing for an event"
             value={profileDraft.communityModeEnabled}
             onPress={() =>
               updateProfileDraft({
@@ -611,9 +614,10 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 22,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "#0F0D0A",
+    backgroundColor: theme.colors.canvas,
     paddingTop: 10,
-    maxHeight: "68%"
+    maxHeight: "72%",
+    paddingBottom: 12
   },
   modalHeader: {
     flexDirection: "row",
@@ -647,6 +651,7 @@ const styles = StyleSheet.create({
   },
   modalOptionsContent: {
     padding: 12,
+    paddingBottom: 28,
     gap: 8
   },
   modalOptionRow: {
@@ -738,10 +743,10 @@ const styles = StyleSheet.create({
 
 function parseBirthdate(value: string) {
   if (!value) {
-    return getAdultMaximumDate();
+    return getDefaultBirthdate();
   }
   const parsed = new Date(`${value}T12:00:00`);
-  return Number.isNaN(parsed.getTime()) ? getAdultMaximumDate() : parsed;
+  return Number.isNaN(parsed.getTime()) ? getDefaultBirthdate() : parsed;
 }
 
 function formatBirthdateValue(value: Date) {
@@ -762,6 +767,14 @@ function formatBirthdateLabel(value: Date) {
 function getAdultMaximumDate() {
   const date = new Date();
   date.setFullYear(date.getFullYear() - 18);
+  date.setHours(12, 0, 0, 0);
+  return date;
+}
+
+function getDefaultBirthdate() {
+  const date = new Date();
+  date.setFullYear(date.getFullYear() - 25);
+  date.setHours(12, 0, 0, 0);
   return date;
 }
 

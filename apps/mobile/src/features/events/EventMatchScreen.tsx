@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
@@ -18,6 +18,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 
 import { useAppState } from "../../app/AppProvider";
 import { RemoteImage } from "../../components/RemoteImage";
+import { toUserFacingError } from "../../lib/userFacingErrors";
 import { theme } from "../../theme";
 import { expandInterestedGendersForMatching } from "../profile/genderOptions";
 import type { EventRecord } from "../../types/domain";
@@ -73,36 +74,41 @@ export function EventMatchScreen({ route, navigation }: Props) {
     (UIManager as any).setLayoutAnimationEnabledExperimental(true);
   }
 
-  async function loadDiscovery() {
+  const loadDiscovery = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     setNotice(null);
 
-    if (!session?.user?.id) {
+    try {
+      if (!session?.user?.id) {
+        setCandidates([]);
+        setIndex(0);
+        return;
+      }
+
+      const myRsvps = await listMyEventRsvps(session.user.id);
+      if (myRsvps[event.id] !== "going") {
+        setCandidates([]);
+        setIndex(0);
+        setError("Join this event to unlock matching.");
+        return;
+      }
+
+      const rows = await listEventCandidatePreview(event.id, session.user.id, 20);
+      setCandidates(rows.map((r) => ({ ...r, event })));
+      setIndex(0);
+    } catch (error) {
       setCandidates([]);
       setIndex(0);
+      setError(toUserFacingError(error, "Couldn’t load event matching right now."));
+    } finally {
       setIsLoading(false);
-      return;
     }
-
-    const myRsvps = await listMyEventRsvps(session.user.id);
-    if (myRsvps[event.id] !== "going") {
-      setCandidates([]);
-      setIndex(0);
-      setError("Join this event to unlock matching.");
-      setIsLoading(false);
-      return;
-    }
-
-    const rows = await listEventCandidatePreview(event.id, session.user.id, 20);
-    setCandidates(rows.map((r) => ({ ...r, event })));
-    setIndex(0);
-    setIsLoading(false);
-  }
+  }, [event, session?.user?.id]);
 
   useEffect(() => {
     void loadDiscovery();
-  }, [event.id, session?.user?.id]);
+  }, [loadDiscovery]);
 
   useEffect(() => {
     const loop = Animated.loop(
@@ -311,8 +317,6 @@ export function EventMatchScreen({ route, navigation }: Props) {
                 {!current.profilePhotoUrl ? <View style={styles.stageBeamRight} /> : null}
 
                 <View style={styles.photoOverlay}>
-                  <View pointerEvents="none" style={styles.photoBottomFadeSoft} />
-                  <View pointerEvents="none" style={styles.photoBottomFadeStrong} />
                   <View style={styles.photoTopMeta}>
                     <View style={styles.eventPill}>
                       <Text style={styles.eventPillText}>{eventGenreLabel}</Text>
@@ -454,8 +458,8 @@ export function EventMatchScreen({ route, navigation }: Props) {
 }
 
 function candidateMatchesProfilePreferences(
-  candidate: Pick<EventCandidatePreview, "gender" | "age">,
-  profileDraft: { interestedGenders: string[]; preferredAgeMin: number | null; preferredAgeMax: number | null }
+  candidate: Pick<EventCandidatePreview, "gender">,
+  profileDraft: { interestedGenders: string[] }
 ) {
   const interested = expandInterestedGendersForMatching(profileDraft.interestedGenders);
   if (interested) {
@@ -464,19 +468,6 @@ function candidateMatchesProfilePreferences(
       return false;
     }
     if (!interested.has(candidateGender)) {
-      return false;
-    }
-  }
-
-  const hasAgeConstraint = typeof profileDraft.preferredAgeMin === "number" || typeof profileDraft.preferredAgeMax === "number";
-  if (hasAgeConstraint && typeof candidate.age !== "number") {
-    return false;
-  }
-  if (typeof candidate.age === "number") {
-    if (typeof profileDraft.preferredAgeMin === "number" && candidate.age < profileDraft.preferredAgeMin) {
-      return false;
-    }
-    if (typeof profileDraft.preferredAgeMax === "number" && candidate.age > profileDraft.preferredAgeMax) {
       return false;
     }
   }
@@ -535,7 +526,7 @@ function musicArtPalette(index: number) {
 }
 
 const styles = StyleSheet.create({
-  container: { padding: 12, gap: 10, paddingBottom: 24, backgroundColor: "#11100D" },
+  container: { padding: 12, gap: 10, paddingBottom: 24, backgroundColor: theme.colors.canvas },
   eventContextCard: {
     borderRadius: 20,
     borderWidth: 1,
@@ -567,7 +558,7 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.09)",
-    backgroundColor: "#1A1712",
+    backgroundColor: theme.colors.surface,
     padding: 8,
     marginTop: 2
   },
@@ -680,22 +671,6 @@ const styles = StyleSheet.create({
     inset: 0,
     padding: 14,
     justifyContent: "space-between"
-  },
-  photoBottomFadeSoft: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: "52%",
-    backgroundColor: "rgba(7,7,8,0.16)"
-  },
-  photoBottomFadeStrong: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: "34%",
-    backgroundColor: "rgba(7,7,8,0.52)"
   },
   photoTopMeta: {
     flexDirection: "row",

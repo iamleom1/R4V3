@@ -19,7 +19,7 @@ export function MatchesNavigator() {
         headerShadowVisible: false,
         headerTintColor: theme.colors.textPrimary,
         headerTitleStyle: { color: theme.colors.textPrimary, fontWeight: "700" },
-        contentStyle: { backgroundColor: "#11100D" }
+        contentStyle: { backgroundColor: theme.colors.canvas }
       }}
     >
       <Stack.Screen name="MatchHome" component={MatchesScreen} options={{ headerShown: false }} />

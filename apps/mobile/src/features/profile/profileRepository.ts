@@ -2,6 +2,8 @@ import { getSupabaseClient } from "../../lib/supabase";
 import type { ProfileDraft } from "../../app/AppProvider";
 import { toProfileUpsertInput } from "./profileDraftService";
 
+const PROFILE_PHOTO_BUCKET = "profile-photos";
+
 type ProfileRow = {
   display_name: string | null;
   birthdate: string | null;
@@ -109,18 +111,39 @@ export async function upsertProfileDraftToSupabase(userId: string, draft: Profil
   return { ok: true as const };
 }
 
-export async function deleteMyAccountFromSupabase() {
+export async function deleteMyAccountFromSupabase(userId: string) {
   const supabase = getSupabaseClient();
   if (!supabase) {
     return { ok: false as const, error: "Supabase is not configured." };
   }
 
+  const { data: photoRows, error: photoError } = await (supabase.from("photos") as any)
+    .select("storage_path")
+    .eq("profile_id", userId);
+
+  if (photoError) {
+    return { ok: false as const, error: photoError.message };
+  }
+
+  const storagePaths = Array.isArray(photoRows)
+    ? photoRows
+        .map((row) => (typeof row?.storage_path === "string" ? row.storage_path : ""))
+        .filter(Boolean)
+    : [];
+
+  if (storagePaths.length > 0) {
+    const { error: storageError } = await supabase.storage.from(PROFILE_PHOTO_BUCKET).remove(storagePaths);
+    if (storageError) {
+      return { ok: false as const, error: storageError.message };
+    }
+  }
+
   const { data, error } = await (supabase.rpc as any)("delete_my_account");
-  if (error || !data) {
+  if (error) {
     return { ok: false as const, error: error?.message ?? "Failed to delete account." };
   }
 
-  return { ok: true as const };
+  return { ok: true as const, deleted: data === true };
 }
 
 function mapRowToDraft(row: ProfileRow): Partial<ProfileDraft> {

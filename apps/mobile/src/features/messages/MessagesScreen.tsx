@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFocusEffect } from "@react-navigation/native";
-import { ActivityIndicator, Alert, AppState, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, AppState, Modal, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from "react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { ScrollView } from "react-native-gesture-handler";
 import { useAppState } from "../../app/AppProvider";
@@ -9,7 +9,7 @@ import { getSupabaseClient } from "../../lib/supabase";
 import { toUserFacingError } from "../../lib/userFacingErrors";
 import { theme } from "../../theme";
 import type { MessagesStackParamList } from "./MessagesNavigator";
-import { hideConversation, listConversations, listCrewGroups, type ConversationListItem, type CrewGroupListItem, unmatchConversation } from "./messagesRepository";
+import { createCrewGroup, hideConversation, listConversations, listCrewGroups, listGroupChatCandidates, type ConversationListItem, type CrewGroupListItem, type GroupChatCandidate, unmatchConversation } from "./messagesRepository";
 
 type Props = NativeStackScreenProps<MessagesStackParamList, "MessagesHome">;
 
@@ -54,6 +54,11 @@ export function MessagesScreen({ navigation }: Props) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deletingMatchIds, setDeletingMatchIds] = useState<string[]>([]);
+  const [isCreateGroupModalOpen, setIsCreateGroupModalOpen] = useState(false);
+  const [groupTitleDraft, setGroupTitleDraft] = useState("");
+  const [groupCandidates, setGroupCandidates] = useState<GroupChatCandidate[]>([]);
+  const [selectedGroupMemberIds, setSelectedGroupMemberIds] = useState<string[]>([]);
+  const [isCreatingGroup, setIsCreatingGroup] = useState(false);
 
   const hasRealSession = Boolean(session?.user?.id);
   const visibleItems = useMemo(
@@ -68,6 +73,7 @@ export function MessagesScreen({ navigation }: Props) {
   const hasConversations = visibleItems.length > 0;
   const hasCrewGroups = groupItems.length > 0;
   const isChatEmpty = !hasConversations && !hasCrewGroups;
+  const selectedGroupMemberCount = selectedGroupMemberIds.length;
 
   function openConversation(item: ConversationListItem) {
     if (!session?.user?.id) {
@@ -140,6 +146,61 @@ export function MessagesScreen({ navigation }: Props) {
     setItems((prev) => prev.filter((row) => row.matchId !== item.matchId));
   }
 
+  async function openCreateGroupModal() {
+    if (!session?.user?.id) {
+      Alert.alert("Sign in required", "Sign in to create a group chat.");
+      return;
+    }
+
+    try {
+      const candidates = await listGroupChatCandidates(session.user.id);
+      setGroupCandidates(candidates);
+      setSelectedGroupMemberIds([]);
+      setGroupTitleDraft("");
+      setIsCreateGroupModalOpen(true);
+    } catch (e) {
+      Alert.alert("Group chat unavailable", toUserFacingError(e, "Failed to load group members."));
+    }
+  }
+
+  function toggleGroupMember(profileId: string) {
+    setSelectedGroupMemberIds((prev) =>
+      prev.includes(profileId) ? prev.filter((id) => id !== profileId) : [...prev, profileId]
+    );
+  }
+
+  async function handleCreateGroupChat() {
+    if (!session?.user?.id) {
+      return;
+    }
+    if (selectedGroupMemberIds.length === 0) {
+      Alert.alert("Select members", "Pick at least one person to start a group chat.");
+      return;
+    }
+
+    setIsCreatingGroup(true);
+    const result = await createCrewGroup({
+      title: groupTitleDraft,
+      memberIds: selectedGroupMemberIds
+    });
+    setIsCreatingGroup(false);
+
+    if (!result.ok) {
+      Alert.alert("Create failed", result.error);
+      return;
+    }
+
+    const fallbackTitle = groupTitleDraft.trim() || buildGroupTitle(groupCandidates, selectedGroupMemberIds);
+    setIsCreateGroupModalOpen(false);
+    setGroupTitleDraft("");
+    setSelectedGroupMemberIds([]);
+    await load({ refresh: true, silent: true });
+    navigation.navigate("GroupChat", {
+      groupId: result.group.id,
+      title: fallbackTitle || "Crew chat"
+    });
+  }
+
   async function load(opts?: { refresh?: boolean; silent?: boolean }) {
     const refresh = opts?.refresh ?? false;
     const silent = opts?.silent ?? false;
@@ -184,7 +245,7 @@ export function MessagesScreen({ navigation }: Props) {
 
   useFocusEffect(
     React.useCallback(() => {
-      void load({ refresh: true });
+      void load({ refresh: true, silent: true });
       return undefined;
     }, [session?.user?.id])
   );
@@ -205,7 +266,7 @@ export function MessagesScreen({ navigation }: Props) {
         clearTimeout(refreshTimer);
       }
       refreshTimer = setTimeout(() => {
-        void load({ refresh: true });
+        void load({ refresh: true, silent: true });
       }, 180);
     };
 
@@ -275,6 +336,7 @@ export function MessagesScreen({ navigation }: Props) {
   }, [session?.user?.id]);
 
   return (
+    <>
     <ScrollView
       style={styles.scroll}
       contentContainerStyle={[styles.container, { paddingTop: 12 }]}
@@ -293,11 +355,18 @@ export function MessagesScreen({ navigation }: Props) {
     >
       <View style={styles.chatHeader}>
         <Text style={styles.chatTitle}>Chat</Text>
-        {hasConversations ? (
-          <Pressable style={styles.heroBadge}>
-            <Text style={styles.heroBadgeText}>{visibleItems.length} threads</Text>
-          </Pressable>
-        ) : null}
+        <View style={styles.chatHeaderActions}>
+          {session?.user?.id ? (
+            <Pressable style={styles.createGroupButton} onPress={() => void openCreateGroupModal()}>
+              <Text style={styles.createGroupButtonText}>+ Group Chat</Text>
+            </Pressable>
+          ) : null}
+          {hasConversations ? (
+            <Pressable style={styles.heroBadge}>
+              <Text style={styles.heroBadgeText}>{visibleItems.length} threads</Text>
+            </Pressable>
+          ) : null}
+        </View>
       </View>
 
       {session?.user?.id && !isChatEmpty ? (
@@ -509,6 +578,82 @@ export function MessagesScreen({ navigation }: Props) {
         </View>
       ) : null}
     </ScrollView>
+    <Modal
+      visible={isCreateGroupModalOpen}
+      transparent
+      animationType="fade"
+      onRequestClose={() => {
+        if (!isCreatingGroup) {
+          setIsCreateGroupModalOpen(false);
+        }
+      }}
+    >
+      <View style={styles.modalBackdrop}>
+        <View style={styles.modalCard}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Create Group Chat</Text>
+            <Pressable disabled={isCreatingGroup} onPress={() => setIsCreateGroupModalOpen(false)} style={styles.modalCloseButton}>
+              <Text style={styles.modalCloseButtonText}>Cancel</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.modalBodyText}>Choose people from your direct chats and optionally name the group.</Text>
+          <TextInput
+            value={groupTitleDraft}
+            onChangeText={setGroupTitleDraft}
+            placeholder="Group name (optional)"
+            placeholderTextColor={theme.colors.textSecondary}
+            style={styles.modalInput}
+            editable={!isCreatingGroup}
+          />
+          <Text style={styles.modalSectionLabel}>Members</Text>
+          <ScrollView style={styles.modalMemberList} contentContainerStyle={styles.modalMemberListContent}>
+            {groupCandidates.length > 0 ? (
+              groupCandidates.map((candidate, idx) => {
+                const selected = selectedGroupMemberIds.includes(candidate.profileId);
+                return (
+                  <Pressable
+                    key={candidate.profileId}
+                    style={[styles.memberRow, selected && styles.memberRowSelected]}
+                    onPress={() => toggleGroupMember(candidate.profileId)}
+                    disabled={isCreatingGroup}
+                  >
+                    <View style={[styles.memberAvatar, getAvatarPaletteFromCandidate(candidate, idx)]}>
+                      {candidate.photoUrl ? (
+                        <RemoteImage uri={candidate.photoUrl} style={styles.chatAvatarPhoto} />
+                      ) : (
+                        <>
+                          <View style={styles.artGlow} />
+                          <Text style={styles.artText}>{initials(candidate.displayName)}</Text>
+                        </>
+                      )}
+                    </View>
+                    <View style={styles.memberBody}>
+                      <Text style={styles.memberName}>{candidate.displayName}</Text>
+                      <Text style={styles.memberMeta}>{candidate.city ?? "Available in chat"}</Text>
+                    </View>
+                    <View style={[styles.memberCheck, selected && styles.memberCheckSelected]}>
+                      <Text style={[styles.memberCheckText, selected && styles.memberCheckTextSelected]}>{selected ? "✓" : "+"}</Text>
+                    </View>
+                  </Pressable>
+                );
+              })
+            ) : (
+              <Text style={styles.modalEmptyText}>No eligible chat contacts yet. Start a direct chat first.</Text>
+            )}
+          </ScrollView>
+          <Pressable
+            onPress={() => void handleCreateGroupChat()}
+            disabled={isCreatingGroup || selectedGroupMemberCount === 0}
+            style={[styles.modalPrimaryButton, (isCreatingGroup || selectedGroupMemberCount === 0) && styles.modalPrimaryButtonDisabled]}
+          >
+            <Text style={styles.modalPrimaryButtonText}>
+              {isCreatingGroup ? "Creating..." : `Create Group${selectedGroupMemberCount > 0 ? ` (${selectedGroupMemberCount + 1})` : ""}`}
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+    </>
   );
 }
 
@@ -536,6 +681,23 @@ function getAvatarPalette(item: ConversationListItem, index: number) {
   if (seed.includes("techno")) return { backgroundColor: "#2A181B", borderColor: "#FF6A4D" };
   if (seed.includes("house")) return { backgroundColor: "#2A1F14", borderColor: "#FF9A54" };
   return { backgroundColor: "#18202D", borderColor: "#4F86FF" };
+}
+
+function getAvatarPaletteFromCandidate(item: GroupChatCandidate, index: number) {
+  const seed = `${item.displayName}-${item.city ?? ""}-${index}`.toLowerCase();
+  if (seed.includes("bass") || seed.includes("dub")) return { backgroundColor: "#241938", borderColor: "#6C49FF" };
+  if (seed.includes("techno")) return { backgroundColor: "#2A181B", borderColor: "#FF6A4D" };
+  if (seed.includes("house")) return { backgroundColor: "#2A1F14", borderColor: "#FF9A54" };
+  return { backgroundColor: "#18202D", borderColor: "#4F86FF" };
+}
+
+function buildGroupTitle(candidates: GroupChatCandidate[], selectedIds: string[]) {
+  const names = candidates
+    .filter((candidate) => selectedIds.includes(candidate.profileId))
+    .map((candidate) => candidate.displayName.trim())
+    .filter(Boolean);
+
+  return names.slice(0, 3).join(", ");
 }
 
 const styles = StyleSheet.create({
@@ -598,6 +760,24 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 12,
     marginBottom: 2
+  },
+  chatHeaderActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8
+  },
+  createGroupButton: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,154,84,0.30)",
+    backgroundColor: "rgba(255,154,84,0.10)",
+    paddingHorizontal: 12,
+    paddingVertical: 7
+  },
+  createGroupButtonText: {
+    color: "#FFF1E4",
+    fontSize: 12,
+    fontWeight: "800"
   },
   authNoticeStrip: {
     borderRadius: 14,
@@ -1158,5 +1338,148 @@ const styles = StyleSheet.create({
     color: "rgba(235,227,214,0.58)",
     fontSize: 12,
     lineHeight: 18
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.68)",
+    justifyContent: "center",
+    padding: 18
+  },
+  modalCard: {
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "#11100D",
+    padding: 16,
+    gap: 12,
+    maxHeight: "82%"
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12
+  },
+  modalTitle: {
+    color: "#FFF8EE",
+    fontSize: 20,
+    fontWeight: "800"
+  },
+  modalCloseButton: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.03)",
+    paddingHorizontal: 10,
+    paddingVertical: 6
+  },
+  modalCloseButtonText: {
+    color: "#FFF8EE",
+    fontSize: 12,
+    fontWeight: "700"
+  },
+  modalBodyText: {
+    color: "rgba(235,227,214,0.58)",
+    fontSize: 13,
+    lineHeight: 18
+  },
+  modalInput: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(255,255,255,0.03)",
+    color: "#FFF8EE",
+    paddingHorizontal: 14,
+    paddingVertical: 12
+  },
+  modalSectionLabel: {
+    color: "#FFF8EE",
+    fontSize: 13,
+    fontWeight: "800"
+  },
+  modalMemberList: {
+    maxHeight: 320
+  },
+  modalMemberListContent: {
+    gap: 8
+  },
+  memberRow: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(255,255,255,0.02)",
+    padding: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10
+  },
+  memberRowSelected: {
+    borderColor: "rgba(255,154,84,0.28)",
+    backgroundColor: "rgba(255,154,84,0.09)"
+  },
+  memberAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden"
+  },
+  memberBody: {
+    flex: 1,
+    gap: 2
+  },
+  memberName: {
+    color: "#FFF8EE",
+    fontSize: 14,
+    fontWeight: "700"
+  },
+  memberMeta: {
+    color: "rgba(235,227,214,0.50)",
+    fontSize: 12
+  },
+  memberCheck: {
+    width: 28,
+    height: 28,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.03)"
+  },
+  memberCheckSelected: {
+    borderColor: "rgba(255,154,84,0.30)",
+    backgroundColor: "rgba(255,154,84,0.14)"
+  },
+  memberCheckText: {
+    color: "#FFF8EE",
+    fontSize: 14,
+    fontWeight: "800"
+  },
+  memberCheckTextSelected: {
+    color: "#FFD7B7"
+  },
+  modalEmptyText: {
+    color: "rgba(235,227,214,0.46)",
+    fontSize: 12,
+    lineHeight: 18,
+    paddingVertical: 8
+  },
+  modalPrimaryButton: {
+    borderRadius: 16,
+    backgroundColor: theme.colors.accent,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 14
+  },
+  modalPrimaryButtonDisabled: {
+    opacity: 0.5
+  },
+  modalPrimaryButtonText: {
+    color: "#FFF8EE",
+    fontSize: 14,
+    fontWeight: "800"
   }
 });

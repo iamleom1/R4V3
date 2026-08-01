@@ -19,6 +19,37 @@ jest.mock("expo-notifications", () => ({
   }
 }));
 
+jest.mock("expo-linear-gradient", () => {
+  const React = require("react");
+  const { View } = require("react-native");
+
+  return {
+    LinearGradient: ({ children, ...props }: any) => React.createElement(View, props, children)
+  };
+});
+
+jest.mock("expo-apple-authentication", () => ({
+  AppleAuthenticationScope: {
+    FULL_NAME: 0,
+    EMAIL: 1
+  },
+  AppleAuthenticationCredentialState: {
+    AUTHORIZED: 1
+  },
+  signInAsync: jest.fn(async () => ({
+    user: "apple-user-id",
+    identityToken: "apple-identity-token",
+    email: "tester@example.com"
+  }))
+}));
+
+jest.mock("expo-crypto", () => ({
+  CryptoDigestAlgorithm: {
+    SHA256: "SHA-256"
+  },
+  digestStringAsync: jest.fn(async () => "mock-digest")
+}));
+
 jest.mock("expo-location", () => ({
   requestForegroundPermissionsAsync: jest.fn(async () => ({ status: "granted", granted: true })),
   getCurrentPositionAsync: jest.fn(async () => ({

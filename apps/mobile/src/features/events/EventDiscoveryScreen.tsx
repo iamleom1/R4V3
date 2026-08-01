@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import DateTimePicker, { type DateTimePickerEvent } from "@react-native-community/datetimepicker";
 import Slider from "@react-native-community/slider";
+import { AudioModule, setAudioModeAsync } from "expo-audio";
+import { LinearGradient } from "expo-linear-gradient";
 import * as Location from "expo-location";
 import {
   ActivityIndicator,
@@ -41,6 +44,7 @@ type AddEventStep = "choice" | "organizer" | "form" | "success";
 type AddEventFlowType = "community" | "promoter" | null;
 type DiscoverSortTab = "top" | "this_weekend" | "nearest" | "most_active" | "soonest";
 type DiscoverGenreFilter = "all" | (typeof EVENT_GENRE_OPTIONS)[number];
+type DiscoverDateFilter = Date | null;
 
 const EVENT_GENRE_OPTIONS = ["Afters", "House", "Tech House", "Techno", "Hard Techno", "Dubstep", "Trance", "Drum & Bass", "Hardstyle", "Bass"];
 const DISCOVER_PREVIEW_LIMIT = 20;
@@ -81,6 +85,23 @@ const RUNTIME_CITY_CENTER_MISSES = new Set<string>();
 const LOS_ANGELES_CENTER = { lat: 34.0522, lng: -118.2437 };
 const LA_FALLBACK_MIN_RESULTS = 18;
 
+function createPreviewPlayer() {
+  const PlayerCtor = (AudioModule as any)?.AudioPlayer;
+  if (!PlayerCtor) {
+    return null;
+  }
+
+  try {
+    return new PlayerCtor(null, 250, false);
+  } catch {
+    try {
+      return new PlayerCtor(null, 250, false, 0);
+    } catch {
+      return null;
+    }
+  }
+}
+
 export function EventDiscoveryScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
   const screenWidth = Dimensions.get("window").width;
@@ -102,6 +123,10 @@ export function EventDiscoveryScreen({ navigation }: Props) {
   const [selectedRadiusMiles, setSelectedRadiusMiles] = useState<number | null>(null);
   const [selectedGenre, setSelectedGenre] = useState<DiscoverGenreFilter>("all");
   const [activeSortTab, setActiveSortTab] = useState<DiscoverSortTab>("top");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState<DiscoverDateFilter>(null);
+  const [showCalendarPicker, setShowCalendarPicker] = useState(false);
+  const [showSearchInput, setShowSearchInput] = useState(false);
   const [isSortDropdownOpen, setIsSortDropdownOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isLocating, setIsLocating] = useState(false);
@@ -109,7 +134,8 @@ export function EventDiscoveryScreen({ navigation }: Props) {
   const [audienceMetrics, setAudienceMetrics] = useState<Record<string, { goingCount: number; lookingForCrewCount: number }>>({});
   const [stableRankedEventIds, setStableRankedEventIds] = useState<string[]>([]);
   const [activePreviewEventId, setActivePreviewEventId] = useState<string | null>(null);
-  const previewNoticeShownRef = useRef(false);
+  const previewPlayerRef = useRef<any>(null);
+  const [previewPlaybackAvailable, setPreviewPlaybackAvailable] = useState(true);
 
   const viewerLocation = useMemo(() => {
     if (typeof profileDraft.locationLat === "number" && typeof profileDraft.locationLng === "number") {
@@ -121,11 +147,21 @@ export function EventDiscoveryScreen({ navigation }: Props) {
     return null;
   }, [profileDraft.city, profileDraft.locationLat, profileDraft.locationLng]);
   const filteredEvents = useMemo(() => {
-    const upcomingEvents = events.filter((event) => isDiscoverableUpcomingEvent(event) && isSceneRelevantDiscoveryEvent(event));
+    const trimmedSearchQuery = searchQuery.trim().toLowerCase();
+    const upcomingEvents = events.filter(
+      (event) =>
+        isDiscoverableUpcomingEvent(event)
+        && (!selectedCalendarDate || isSameCalendarDay(event.startsAt, selectedCalendarDate))
+        && (!trimmedSearchQuery || eventMatchesSearchQuery(event, trimmedSearchQuery))
+    );
     const genreFilteredEvents =
       selectedGenre === "all"
         ? upcomingEvents
         : upcomingEvents.filter((event) => event.genreTags?.some((tag) => normalizeGenreTag(tag) === normalizeGenreTag(selectedGenre)));
+
+    if (selectedCalendarDate) {
+      return genreFilteredEvents;
+    }
 
     if (!viewerLocation) {
       return genreFilteredEvents.filter((event) => {
@@ -157,7 +193,7 @@ export function EventDiscoveryScreen({ navigation }: Props) {
     });
 
     return [...nearby, ...laFallback];
-  }, [events, selectedGenre, selectedRadiusMiles, viewerLocation]);
+  }, [events, searchQuery, selectedCalendarDate, selectedGenre, selectedRadiusMiles, viewerLocation]);
   const rankedFilteredEvents = useMemo(() => {
     return [...filteredEvents].sort((a, b) =>
       compareEventsForDiscoveryTab(
@@ -172,11 +208,13 @@ export function EventDiscoveryScreen({ navigation }: Props) {
   const rankingSignature = useMemo(
     () =>
       JSON.stringify({
+        date: selectedCalendarDate ? selectedCalendarDate.toISOString().slice(0, 10) : null,
         genre: selectedGenre,
+        query: searchQuery.trim().toLowerCase(),
         sort: activeSortTab,
         radius: selectedRadiusMiles
       }),
-    [activeSortTab, selectedGenre, selectedRadiusMiles]
+    [activeSortTab, searchQuery, selectedCalendarDate, selectedGenre, selectedRadiusMiles]
   );
   const visibleRankedEvents = useMemo(() => {
     const eventMap = new Map(rankedFilteredEvents.map((event) => [event.id, event]));
@@ -191,10 +229,10 @@ export function EventDiscoveryScreen({ navigation }: Props) {
   }, [selectedRadiusMiles, viewerLocation]);
   const activeLocationTitle = useMemo(() => {
     if (!viewerLocation) {
-      return "Los Angeles • Default";
+      return "Current Location";
     }
-    return `Current Location • ${selectedRadiusMiles} mi`;
-  }, [selectedRadiusMiles, viewerLocation]);
+    return "Current Location";
+  }, [viewerLocation]);
   const activeLocationMeta = useMemo(() => {
     if (!viewerLocation) {
       return `${filteredEvents.length} LA events`;
@@ -259,7 +297,7 @@ export function EventDiscoveryScreen({ navigation }: Props) {
   const [sortSelectionFeedbackKey, setSortSelectionFeedbackKey] = useState<DiscoverSortTab | null>(null);
 
   const loadEventDiscovery = useCallback(
-    async ({ reset = false, showSpinner = false, refreshing = false } = {}) => {
+    async ({ reset = false, showSpinner = false, refreshing = false, loadFullRange = false } = {}) => {
       if (showSpinner && reset) {
         setIsLoading(true);
       }
@@ -275,10 +313,10 @@ export function EventDiscoveryScreen({ navigation }: Props) {
 
       try {
         if (reset) {
-          const eventRows = await listUpcomingEvents(DISCOVER_PREVIEW_LIMIT, 0);
+          const eventRows = await listUpcomingEvents(loadFullRange ? null : DISCOVER_PREVIEW_LIMIT, 0);
           setEvents(eventRows);
           loadedEventCountRef.current = eventRows.length;
-          const nextHasMore = eventRows.length === DISCOVER_PREVIEW_LIMIT;
+          const nextHasMore = !loadFullRange && eventRows.length === DISCOVER_PREVIEW_LIMIT;
           hasMoreEventsRef.current = nextHasMore;
           setHasMoreEvents(nextHasMore);
         } else {
@@ -327,12 +365,24 @@ export function EventDiscoveryScreen({ navigation }: Props) {
     loadedEventCountRef.current = 0;
     hasMoreEventsRef.current = true;
     hasStartedDiscoveryScrollRef.current = false;
-    await loadEventDiscovery({ reset: true, showSpinner: false, refreshing: true });
-  }, [loadEventDiscovery]);
+    await loadEventDiscovery({
+      reset: true,
+      showSpinner: false,
+      refreshing: true,
+      loadFullRange: Boolean(selectedCalendarDate)
+    });
+  }, [loadEventDiscovery, selectedCalendarDate]);
 
   useEffect(() => {
-    void loadEventDiscovery({ reset: true, showSpinner: true });
-  }, [loadEventDiscovery]);
+    loadedEventCountRef.current = 0;
+    hasMoreEventsRef.current = true;
+    hasStartedDiscoveryScrollRef.current = false;
+    void loadEventDiscovery({
+      reset: true,
+      showSpinner: true,
+      loadFullRange: Boolean(selectedCalendarDate)
+    });
+  }, [loadEventDiscovery, selectedCalendarDate]);
 
   useEffect(() => {
     return () => {
@@ -420,6 +470,33 @@ export function EventDiscoveryScreen({ navigation }: Props) {
   const lastRankingSignatureRef = useRef<string | null>(null);
 
   useEffect(() => {
+    void setAudioModeAsync({
+      playsInSilentMode: true,
+      shouldPlayInBackground: false,
+      interruptionMode: "mixWithOthers"
+    });
+  }, []);
+
+  useEffect(() => {
+    previewPlayerRef.current = createPreviewPlayer();
+    if (!previewPlayerRef.current) {
+      setPreviewPlaybackAvailable(false);
+    }
+
+    return () => {
+      previewPlayerRef.current?.pause?.();
+      previewPlayerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activePreviewEventId && !events.some((event) => event.id === activePreviewEventId)) {
+      previewPlayerRef.current?.pause?.();
+      setActivePreviewEventId(null);
+    }
+  }, [activePreviewEventId, events]);
+
+  useEffect(() => {
     setStableRankedEventIds((prev) => {
       const nextIds = rankedFilteredEvents.map((event) => event.id);
       if (lastRankingSignatureRef.current !== rankingSignature) {
@@ -471,20 +548,31 @@ export function EventDiscoveryScreen({ navigation }: Props) {
   }, [events]);
 
   const handleMusicPreviewPress = useCallback(async (event: EventRecord) => {
-    if (!event.musicPreviewUrl?.trim()) {
+    const previewUrl = event.musicPreviewUrl?.trim();
+    const previewPlayer = previewPlayerRef.current;
+    if (!previewUrl || !previewPlayer) {
       return;
     }
 
-    setActivePreviewEventId((current) => (current === event.id ? null : event.id));
+    try {
+      if (activePreviewEventId === event.id) {
+        previewPlayer.pause();
+        setActivePreviewEventId(null);
+        return;
+      }
 
-    if (!previewNoticeShownRef.current) {
-      previewNoticeShownRef.current = true;
+      previewPlayer.replace(previewUrl);
+      previewPlayer.play();
+      setActivePreviewEventId(event.id);
+    } catch (error) {
+      previewPlayer.pause?.();
+      setActivePreviewEventId(null);
       Alert.alert(
-        "Preview pending dev build",
-        "The in-app play control is in place, but inline audio playback needs a dev build instead of Expo Go."
+        "Couldn’t open preview",
+        toUserFacingError(error, "This preview isn’t available right now.")
       );
     }
-  }, []);
+  }, [activePreviewEventId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -496,9 +584,13 @@ export function EventDiscoveryScreen({ navigation }: Props) {
         loadedEventCountRef.current = 0;
         hasMoreEventsRef.current = true;
         hasStartedDiscoveryScrollRef.current = false;
-        void loadEventDiscovery({ reset: true, showSpinner: !hasEvents });
+        void loadEventDiscovery({
+          reset: true,
+          showSpinner: !hasEvents,
+          loadFullRange: Boolean(selectedCalendarDate)
+        });
       }
-    }, [events.length, loadEventDiscovery, refreshRsvps])
+    }, [events.length, loadEventDiscovery, refreshRsvps, selectedCalendarDate])
   );
 
   const handleDiscoveryScroll = useCallback(
@@ -717,6 +809,15 @@ export function EventDiscoveryScreen({ navigation }: Props) {
     }, 130);
   }
 
+  function handleCalendarChange(_event: DateTimePickerEvent, nextDate?: Date) {
+    if (Platform.OS !== "ios") {
+      setShowCalendarPicker(false);
+    }
+    if (nextDate) {
+      setSelectedCalendarDate(nextDate);
+    }
+  }
+
   return (
     <View style={styles.screenRoot}>
       <ScrollView
@@ -881,21 +982,31 @@ export function EventDiscoveryScreen({ navigation }: Props) {
         ) : null}
 
         <View style={styles.discoveryControlRow}>
-          <View style={styles.sectionHeaderRowCompact}>
+          <View style={styles.discoveryHeaderCopy}>
             <Text style={styles.sectionTitle}>Browse by genre</Text>
-            <Text style={styles.sectionMeta}>{selectedGenre === "all" ? "All events" : selectedGenre}</Text>
+            <Text style={styles.discoveryHeaderMeta}>{selectedGenre === "all" ? "All events" : selectedGenre}</Text>
           </View>
-          <Pressable
-            style={styles.locationTrigger}
-            accessibilityRole="button"
-            accessibilityLabel="Open location filter"
-            onPress={() => setShowLocationFilterModal(true)}
-          >
-            <Text style={styles.locationTriggerGlyphText}>⌖</Text>
-            <Text style={styles.locationTriggerValue} numberOfLines={1}>
-              {activeLocationTitle}
-            </Text>
-          </Pressable>
+          <View style={styles.discoveryControlActions}>
+            <Pressable
+              style={styles.locationTrigger}
+              accessibilityRole="button"
+              accessibilityLabel="Open location filter"
+              onPress={() => setShowLocationFilterModal(true)}
+            >
+              <Text style={styles.locationTriggerGlyphText}>⌖</Text>
+              <Text style={styles.locationTriggerValue} numberOfLines={1}>
+                {activeLocationTitle}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[styles.searchTrigger, showSearchInput && styles.searchTriggerActive]}
+              accessibilityRole="button"
+              accessibilityLabel="Search events by name"
+              onPress={() => setShowSearchInput((current) => !current)}
+            >
+              <Text style={styles.searchTriggerText}>🔎</Text>
+            </Pressable>
+          </View>
         </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.genreRail}>
           <Pressable
@@ -917,6 +1028,22 @@ export function EventDiscoveryScreen({ navigation }: Props) {
             );
           })}
         </ScrollView>
+        {showSearchInput ? (
+          <View style={styles.discoverySearchRow}>
+            <TextInput
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              style={styles.discoverySearchInput}
+              placeholder="Search events by name or venue"
+              placeholderTextColor={theme.colors.textSecondary}
+            />
+            {searchQuery.trim() ? (
+              <Pressable style={styles.discoverySearchClear} onPress={() => setSearchQuery("")}>
+                <Text style={styles.discoverySearchClearText}>Clear</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
       </View>
 
       <View style={styles.sectionHeaderRow}>
@@ -927,6 +1054,11 @@ export function EventDiscoveryScreen({ navigation }: Props) {
               {`Sort: ${DISCOVER_SORT_OPTIONS.find((option) => option.key === activeSortTab)?.label ?? "🔥 Top"}`}
             </Text>
             <Text style={styles.sortDropdownTriggerGlyph}>▾</Text>
+          </Pressable>
+          <Pressable style={styles.calendarTrigger} onPress={() => setShowCalendarPicker((current) => !current)}>
+            <Text style={styles.calendarTriggerText}>
+              {selectedCalendarDate ? `📅 ${formatCalendarFilterDate(selectedCalendarDate)}` : "📅"}
+            </Text>
           </Pressable>
           <Text style={styles.sectionMeta}>{isLoading ? "Loading" : rankedFilteredEvents.length > 0 ? `${rankedFilteredEvents.length} shown` : "No events"}</Text>
         </View>
@@ -949,6 +1081,7 @@ export function EventDiscoveryScreen({ navigation }: Props) {
           const crewCount = metrics.lookingForCrewCount;
           const listingLabel = getEventListingLabel(event);
           const hasAudienceMetrics = goingCount > 0 || crewCount > 0;
+          const useCondensedPosterTitle = event.title.trim().length > 26;
           return (
             <View
               key={event.id}
@@ -978,7 +1111,20 @@ export function EventDiscoveryScreen({ navigation }: Props) {
                     }
                   >
                     {event.flyerUrl ? <View style={styles.eventPosterFlyerOverlay} /> : null}
-                    {event.flyerUrl ? <View style={styles.eventPosterBottomScrim} /> : null}
+                    {event.flyerUrl ? (
+                      <LinearGradient
+                        colors={[
+                          "rgba(0,0,0,0)",
+                          "rgba(0,0,0,0.14)",
+                          "rgba(0,0,0,0.38)",
+                          "rgba(0,0,0,0.68)",
+                          "rgba(0,0,0,0.86)",
+                          "rgba(0,0,0,0.96)"
+                        ]}
+                        locations={[0, 0.1, 0.35, 0.58, 0.8, 1]}
+                        style={styles.eventPosterBottomScrim}
+                      />
+                    ) : null}
                   </FlyerSurface>
                   <View style={styles.eventPosterTopRow}>
                     <View style={styles.eventPosterGenrePill}>
@@ -986,14 +1132,14 @@ export function EventDiscoveryScreen({ navigation }: Props) {
                         {((event.genreTags ?? [])[0] ?? "EDM").toUpperCase()}
                       </Text>
                     </View>
-                    {event.musicPreviewUrl ? (
+                    {event.musicPreviewUrl && previewPlaybackAvailable ? (
                       <Pressable
                         style={[
                           styles.eventPosterPreviewButton,
                           activePreviewEventId === event.id && styles.eventPosterPreviewButtonActive
                         ]}
                         onPress={(pressEvent) => {
-                          pressEvent.stopPropagation();
+                          pressEvent?.stopPropagation?.();
                           void handleMusicPreviewPress(event);
                         }}
                       >
@@ -1004,7 +1150,14 @@ export function EventDiscoveryScreen({ navigation }: Props) {
                     ) : null}
                   </View>
                   <View style={styles.eventPosterBottom}>
-                    <Text style={[styles.eventPosterTitle, eventGridColumns === 2 && styles.eventPosterTitleCompact]} numberOfLines={2}>
+                    <Text
+                      style={[
+                        styles.eventPosterTitle,
+                        useCondensedPosterTitle && styles.eventPosterTitleCondensed,
+                        eventGridColumns === 2 && styles.eventPosterTitleCompact
+                      ]}
+                      numberOfLines={2}
+                    >
                       {event.title}
                     </Text>
                     <Text style={styles.eventListingLabel} numberOfLines={1}>
@@ -1034,10 +1187,15 @@ export function EventDiscoveryScreen({ navigation }: Props) {
                         {formatEventDate(event.startsAt)}
                       </Text>
                     </View>
-                    {distanceAway !== null ? <Text style={styles.distanceMeta}>{formatDistanceAway(distanceAway)}</Text> : null}
                   </View>
                 </View>
-                <View style={[styles.eventCardBody, eventGridColumns === 2 && styles.eventCardBodyCompact]}>
+                <View
+                  style={[
+                    styles.eventCardBody,
+                    !hasAudienceMetrics && styles.eventCardBodyNoMetrics,
+                    eventGridColumns === 2 && styles.eventCardBodyCompact
+                  ]}
+                >
                   {hasAudienceMetrics ? (
                     <View style={styles.eventMetricsRow}>
                       {goingCount > 0 ? (
@@ -1203,6 +1361,32 @@ export function EventDiscoveryScreen({ navigation }: Props) {
               </View>
             </View>
           </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      <Modal animationType="fade" transparent visible={showCalendarPicker} onRequestClose={() => setShowCalendarPicker(false)}>
+        <View style={styles.calendarModalRoot}>
+          <Pressable style={styles.calendarModalBackdrop} onPress={() => setShowCalendarPicker(false)} />
+          <View style={styles.calendarModalContent} pointerEvents="box-none">
+            <View style={styles.calendarPickerCard}>
+              <DateTimePicker
+                value={selectedCalendarDate ?? new Date()}
+                mode="date"
+                display={Platform.OS === "ios" ? "inline" : "default"}
+                minimumDate={new Date()}
+                onChange={handleCalendarChange}
+                themeVariant="dark"
+              />
+              <View style={styles.calendarPickerActions}>
+                <Pressable style={styles.calendarPickerButton} onPress={() => setSelectedCalendarDate(null)}>
+                  <Text style={styles.calendarPickerButtonText}>Clear date</Text>
+                </Pressable>
+                <Pressable style={styles.calendarPickerButton} onPress={() => setShowCalendarPicker(false)}>
+                  <Text style={styles.calendarPickerButtonText}>Done</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
         </View>
       </Modal>
 
@@ -1756,12 +1940,17 @@ function compareFeaturedEvents(a: EventRecord, b: EventRecord, viewerLocation?: 
 }
 
 function isDiscoverableUpcomingEvent(event: Pick<EventRecord, "startsAt" | "endsAt">) {
-  const reference = event.endsAt ?? event.startsAt;
-  const timestamp = new Date(reference).getTime();
-  if (Number.isNaN(timestamp)) {
+  const startsAtMs = new Date(event.startsAt).getTime();
+  if (Number.isNaN(startsAtMs)) {
     return false;
   }
-  return timestamp >= Date.now();
+
+  const endsAtMs = event.endsAt ? new Date(event.endsAt).getTime() : Number.NaN;
+  const cutoffMs = Number.isNaN(endsAtMs)
+    ? startsAtMs + 2 * 60 * 60 * 1000
+    : Math.max(endsAtMs, startsAtMs + 2 * 60 * 60 * 1000);
+
+  return cutoffMs >= Date.now();
 }
 
 const DISCOVERY_OFF_TARGET_KEYWORDS = [
@@ -1779,6 +1968,8 @@ const DISCOVERY_OFF_TARGET_KEYWORDS = [
   "singer-songwriter",
   "country",
   "folk",
+  "reggaeton",
+  "corridos",
   "mariachi",
   "opera",
   "orchestra",
@@ -1792,9 +1983,26 @@ const DISCOVERY_OFF_TARGET_KEYWORDS = [
   "rap"
 ];
 
-function isSceneRelevantDiscoveryEvent(event: Pick<EventRecord, "title" | "venueName" | "genreTags">) {
-  const haystack = `${event.title} ${event.venueName ?? ""} ${(event.genreTags ?? []).join(" ")}`.toLowerCase();
-  return !DISCOVERY_OFF_TARGET_KEYWORDS.some((keyword) => haystack.includes(keyword));
+function eventMatchesSearchQuery(event: Pick<EventRecord, "title" | "venueName" | "city">, query: string) {
+  const haystack = `${event.title} ${event.venueName ?? ""} ${event.city ?? ""}`.toLowerCase();
+  return haystack.includes(query);
+}
+
+function isSameCalendarDay(startsAt: string, date: Date) {
+  const parsed = new Date(startsAt);
+  const selectedDayKey = formatCalendarDayKey(date);
+  const localDayKey = Number.isNaN(parsed.getTime()) ? null : formatCalendarDayKey(parsed);
+  const isoDayKey = startsAt.slice(0, 10);
+
+  return localDayKey === selectedDayKey || isoDayKey === selectedDayKey;
+}
+
+function formatCalendarFilterDate(date: Date) {
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
+}
+
+function formatCalendarDayKey(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 function normalizeGenreTag(value: string) {
@@ -2206,8 +2414,8 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.1)",
-    backgroundColor: "rgba(15,12,9,0.98)",
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "#121317",
     paddingTop: 14,
     paddingHorizontal: 14,
     gap: 10
@@ -2230,13 +2438,13 @@ const styles = StyleSheet.create({
   addEventSheetBack: {
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(211,92,51,0.4)",
-    backgroundColor: "rgba(211,92,51,0.15)",
+    borderColor: "rgba(230,104,56,0.34)",
+    backgroundColor: "rgba(230,104,56,0.12)",
     paddingHorizontal: 10,
     paddingVertical: 6
   },
   addEventSheetBackText: {
-    color: "#FFE0D2",
+    color: "#F6C6B2",
     fontSize: 12,
     fontWeight: "700"
   },
@@ -2259,8 +2467,8 @@ const styles = StyleSheet.create({
   addEventChoiceCard: {
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.1)",
-    backgroundColor: "rgba(255,255,255,0.04)",
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "#17191F",
     padding: 14,
     gap: 6
   },
@@ -2295,7 +2503,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: "#17191F",
     paddingHorizontal: 10,
     paddingVertical: 8
   },
@@ -2327,7 +2535,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 11,
     color: theme.colors.textPrimary,
-    backgroundColor: "rgba(255,255,255,0.04)"
+    backgroundColor: "#17191F"
   },
   venueModeRow: {
     flexDirection: "row",
@@ -2338,13 +2546,13 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.12)",
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: "#17191F",
     paddingVertical: 8,
     alignItems: "center"
   },
   venueModePillActive: {
-    borderColor: "rgba(211,92,51,0.5)",
-    backgroundColor: "rgba(211,92,51,0.18)"
+    borderColor: "rgba(230,104,56,0.52)",
+    backgroundColor: "rgba(230,104,56,0.14)"
   },
   venueModeText: {
     color: "rgba(255,247,240,0.72)",
@@ -2363,13 +2571,13 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.14)",
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: "#17191F",
     paddingHorizontal: 10,
     paddingVertical: 6
   },
   genreTagPillActive: {
-    borderColor: "rgba(211,92,51,0.6)",
-    backgroundColor: "rgba(211,92,51,0.22)"
+    borderColor: "rgba(230,104,56,0.52)",
+    backgroundColor: "rgba(230,104,56,0.14)"
   },
   genreTagPillText: {
     color: "rgba(255,245,237,0.82)",
@@ -2407,13 +2615,13 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.26)",
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: "#17191F",
     alignItems: "center",
     justifyContent: "center"
   },
   checkboxSquareChecked: {
-    borderColor: "rgba(211,92,51,0.8)",
-    backgroundColor: "rgba(211,92,51,0.22)"
+    borderColor: "rgba(230,104,56,0.7)",
+    backgroundColor: "rgba(230,104,56,0.16)"
   },
   checkboxTick: {
     color: "#FFF8EE",
@@ -2430,8 +2638,8 @@ const styles = StyleSheet.create({
     minHeight: 50,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "#D35C33",
-    backgroundColor: "#D65B2C",
+    borderColor: "rgba(230,104,56,0.6)",
+    backgroundColor: "#DE6838",
     alignItems: "center",
     justifyContent: "center"
   },
@@ -2678,7 +2886,9 @@ const styles = StyleSheet.create({
   },
   heroTitle: {
     color: theme.colors.textPrimary,
-    ...theme.type.titleLg
+    ...theme.type.titleMd,
+    fontSize: 17,
+    lineHeight: 22
   },
   body: {
     color: theme.colors.textSecondary,
@@ -2715,7 +2925,53 @@ const styles = StyleSheet.create({
   discoveryControlRow: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
     gap: 10
+  },
+  discoveryHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2
+  },
+  discoveryHeaderMeta: {
+    color: theme.colors.textSecondary,
+    ...theme.type.caption
+  },
+  discoveryControlActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexShrink: 0,
+    gap: 8,
+    marginLeft: 8
+  },
+  discoverySearchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8
+  },
+  discoverySearchInput: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "#17191F",
+    color: "#FFF8EE",
+    paddingHorizontal: 12,
+    paddingVertical: 10
+  },
+  discoverySearchClear: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "#17191F",
+    paddingHorizontal: 12,
+    paddingVertical: 9
+  },
+  discoverySearchClearText: {
+    color: "rgba(255,248,238,0.82)",
+    ...theme.type.caption,
+    fontWeight: "700"
   },
   upcomingHeaderActions: {
     flexDirection: "row",
@@ -2743,12 +2999,64 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "800"
   },
+  calendarTrigger: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceMuted,
+    paddingHorizontal: 10,
+    paddingVertical: 8
+  },
+  calendarTriggerText: {
+    color: theme.colors.textPrimary,
+    ...theme.type.caption,
+    fontWeight: "700"
+  },
+  calendarModalRoot: {
+    flex: 1
+  },
+  calendarModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.36)"
+  },
+  calendarModalContent: {
+    flex: 1,
+    justifyContent: "flex-start",
+    paddingTop: 206,
+    paddingHorizontal: 24
+  },
+  calendarPickerCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(18,19,23,0.94)",
+    padding: 12,
+    gap: 10
+  },
+  calendarPickerActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 8
+  },
+  calendarPickerButton: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "#17191F",
+    paddingHorizontal: 12,
+    paddingVertical: 8
+  },
+  calendarPickerButtonText: {
+    color: "#FFF8EE",
+    ...theme.type.caption,
+    fontWeight: "700"
+  },
   sortBottomSheet: {
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "#14110D",
+    backgroundColor: "#121317",
     paddingHorizontal: 16,
     paddingTop: 14,
     gap: 10
@@ -2772,7 +3080,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12
   },
   sortBottomSheetItemActive: {
-    backgroundColor: "rgba(211,92,51,0.14)"
+    backgroundColor: "rgba(230,104,56,0.14)"
   },
   sortBottomSheetItemText: {
     color: "rgba(255,245,237,0.86)",
@@ -2788,13 +3096,31 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    maxWidth: 132,
+    alignSelf: "flex-start",
     borderRadius: 999,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.12)",
-    backgroundColor: "rgba(255,255,255,0.045)",
+    backgroundColor: "#17191F",
     paddingHorizontal: 10,
     paddingVertical: 7
+  },
+  searchTrigger: {
+    minWidth: 40,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "#17191F",
+    paddingHorizontal: 10,
+    paddingVertical: 7
+  },
+  searchTriggerActive: {
+    borderColor: "rgba(230,104,56,0.48)",
+    backgroundColor: "rgba(230,104,56,0.14)"
+  },
+  searchTriggerText: {
+    fontSize: 14
   },
   locationTriggerGlyphText: {
     color: "rgba(255,232,182,0.92)",
@@ -2802,7 +3128,6 @@ const styles = StyleSheet.create({
     fontWeight: "800"
   },
   locationTriggerValue: {
-    flex: 1,
     color: "rgba(255,248,238,0.9)",
     fontSize: 12,
     lineHeight: 15,
@@ -2813,7 +3138,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 24,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "#14110D",
+    backgroundColor: "#121317",
     paddingHorizontal: 16,
     paddingTop: 14,
     gap: 14
@@ -2843,7 +3168,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: "#17191F",
     paddingHorizontal: 14,
     paddingVertical: 12,
     flexDirection: "row",
@@ -2883,15 +3208,15 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.07)",
-    backgroundColor: "rgba(255,255,255,0.015)",
+    backgroundColor: "#17191F",
     paddingHorizontal: 12,
     paddingVertical: 11,
     alignItems: "center",
     justifyContent: "center"
   },
   locationActionButtonPrimary: {
-    borderColor: "rgba(211,92,51,0.46)",
-    backgroundColor: "rgba(211,92,51,0.22)"
+    borderColor: "rgba(230,104,56,0.48)",
+    backgroundColor: "rgba(230,104,56,0.14)"
   },
   locationActionButtonText: {
     color: "rgba(255,248,238,0.78)",
@@ -2925,7 +3250,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: "#17191F",
     paddingHorizontal: 14,
     paddingTop: 14,
     paddingBottom: 10,
@@ -2959,8 +3284,8 @@ const styles = StyleSheet.create({
   locationDoneButton: {
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "rgba(211,92,51,0.4)",
-    backgroundColor: "rgba(211,92,51,0.18)",
+    borderColor: "rgba(230,104,56,0.48)",
+    backgroundColor: "rgba(230,104,56,0.14)",
     paddingHorizontal: 14,
     paddingVertical: 11
   },
@@ -3143,13 +3468,13 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "#111726"
+    backgroundColor: "#08090D"
   },
   eventCardCompact: {
     borderRadius: 20
   },
   eventPoster: {
-    height: 188,
+    height: 204,
     padding: 14,
     justifyContent: "space-between",
     overflow: "hidden"
@@ -3166,8 +3491,8 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    height: 118,
-    backgroundColor: "rgba(4,6,10,0.54)"
+    height: 144,
+    pointerEvents: "none"
   },
   eventPosterGrid: {
     position: "absolute",
@@ -3273,6 +3598,10 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 6
   },
+  eventPosterTitleCondensed: {
+    fontSize: 18,
+    lineHeight: 22
+  },
   eventPosterTitleCompact: {
     fontSize: 14,
     lineHeight: 17
@@ -3321,11 +3650,15 @@ const styles = StyleSheet.create({
     fontSize: 13
   },
   eventCardBody: {
-    backgroundColor: "#101A2A",
-    borderTopWidth: 1,
-    borderTopColor: "rgba(255,255,255,0.05)",
-    padding: 12,
+    backgroundColor: "transparent",
+    paddingHorizontal: 12,
+    paddingTop: 2,
+    paddingBottom: 12,
     gap: 10
+  },
+  eventCardBodyNoMetrics: {
+    paddingTop: 0,
+    gap: 0
   },
   eventCardBodyCompact: {
     padding: 10,

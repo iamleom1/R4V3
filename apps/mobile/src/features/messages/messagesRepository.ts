@@ -45,6 +45,19 @@ export type CrewGroupMessage = {
   createdAt: string;
 };
 
+export type GroupChatCandidate = {
+  profileId: string;
+  displayName: string;
+  city: string | null;
+  photoUrl?: string | null;
+};
+
+export type CrewGroupMember = {
+  profileId: string;
+  displayName: string;
+  city: string | null;
+};
+
 export type CreateReportInput = {
   category: string;
   details?: string;
@@ -337,6 +350,120 @@ export async function ensureDirectCrewGroup(otherProfileId: string) {
       createdAt: row.created_at as string
     }
   };
+}
+
+export async function createCrewGroup(input: { title?: string; memberIds: string[] }) {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false as const, error: "Supabase is not configured." };
+  }
+
+  const uniqueMemberIds = Array.from(new Set(input.memberIds.filter(Boolean)));
+  if (uniqueMemberIds.length === 0) {
+    return { ok: false as const, error: "Select at least one other member." };
+  }
+
+  const { data, error } = await (supabase.rpc as any)("create_crew_group", {
+    p_title: input.title?.trim() || null,
+    p_member_ids: uniqueMemberIds
+  });
+
+  if (error) {
+    return { ok: false as const, error: toUserFacingError(error.message, "Failed to create group chat.") };
+  }
+
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row?.group_id) {
+    return { ok: false as const, error: "Failed to create group chat." };
+  }
+
+  void trackEvent("crew_group_created", {
+    member_count: uniqueMemberIds.length + 1,
+    has_custom_title: Boolean(input.title?.trim())
+  });
+
+  return {
+    ok: true as const,
+    group: {
+      id: row.group_id as string,
+      createdAt: row.created_at as string
+    }
+  };
+}
+
+export async function listGroupChatCandidates(viewerProfileId: string): Promise<GroupChatCandidate[]> {
+  const conversations = await listConversations(viewerProfileId);
+  return conversations.map((item) => ({
+    profileId: item.otherProfileId,
+    displayName: item.otherDisplayName,
+    city: item.otherCity,
+    photoUrl: item.otherProfilePhotoUrl ?? null
+  }));
+}
+
+export async function listCrewGroupMembers(groupId: string): Promise<CrewGroupMember[]> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    throw new Error("Supabase is not configured.");
+  }
+
+  const { data, error } = await (supabase.rpc as any)("list_crew_group_members", {
+    p_group_id: groupId
+  });
+
+  if (error || !Array.isArray(data)) {
+    throw new Error(error?.message ?? "Failed to load crew members.");
+  }
+
+  return data.map((row: any) => ({
+    profileId: row.profile_id as string,
+    displayName: (row.display_name as string | null)?.trim() || "R4V3 User",
+    city: (row.city as string | null) ?? null
+  }));
+}
+
+export async function addCrewGroupMembers(input: { groupId: string; memberIds: string[] }) {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false as const, error: "Supabase is not configured." };
+  }
+
+  const uniqueMemberIds = Array.from(new Set(input.memberIds.filter(Boolean)));
+  if (uniqueMemberIds.length === 0) {
+    return { ok: false as const, error: "Select at least one member." };
+  }
+
+  const { data, error } = await (supabase.rpc as any)("add_crew_group_members", {
+    p_group_id: input.groupId,
+    p_member_ids: uniqueMemberIds
+  });
+
+  if (error) {
+    return { ok: false as const, error: toUserFacingError(error.message, "Failed to add members.") };
+  }
+
+  return { ok: true as const, addedCount: Number(data ?? 0) };
+}
+
+export async function leaveCrewGroup(groupId: string) {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false as const, error: "Supabase is not configured." };
+  }
+
+  const { error } = await (supabase.rpc as any)("leave_crew_group", {
+    p_group_id: groupId
+  });
+
+  if (error) {
+    return { ok: false as const, error: toUserFacingError(error.message, "Failed to delete crew chat.") };
+  }
+
+  void trackEvent("crew_group_left", {
+    group_id: groupId
+  });
+
+  return { ok: true as const };
 }
 
 export async function listCrewGroups(viewerProfileId: string): Promise<CrewGroupListItem[]> {

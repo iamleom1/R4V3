@@ -1,13 +1,13 @@
 export const theme = {
   colors: {
-    canvas: "#11100D",
-    surface: "#1A1712",
-    surfaceMuted: "#241F18",
-    border: "#342C22",
+    canvas: "#000000",
+    surface: "#0A0A0A",
+    surfaceMuted: "#121212",
+    border: "#242424",
     textPrimary: "#FFF8EE",
     textSecondary: "#B8AA96",
     accent: "#D35C33",
-    accentSoft: "#372018"
+    accentSoft: "#1A0F0B"
   },
   radii: {
     sm: 10,

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useAppState } from "../../app/AppProvider";
@@ -8,9 +9,15 @@ import { RemoteImage } from "../../components/RemoteImage";
 import { toUserFacingError } from "../../lib/userFacingErrors";
 import { theme } from "../../theme";
 import type { EventRecord, RSVPStatus } from "../../types/domain";
-import { hasEventCrewChat, joinEventCrewRoom, listEventAudienceMetrics, listEventCrewRooms, startEventCrewThreadSeed, type EventCrewRoom } from "./eventRepository";
+import {
+  getEventSourceUrl,
+  hasEventCrewChat,
+  listEventAttendeePreview,
+  listEventAudienceMetrics
+} from "./eventRepository";
+import type { EventAttendeePreview } from "./eventRepository";
 import type { DiscoverStackParamList } from "./DiscoverNavigator";
-import { getEventLocationInfo, getEventLocationSummary } from "./eventLocation";
+import { getEventLocationInfo } from "./eventLocation";
 import { useCrewVisibilityState } from "./useCrewVisibilityState";
 import { useEventRsvpState } from "./useEventRsvpState";
 
@@ -26,10 +33,10 @@ export function EventDetailScreen({ route, navigation }: Props) {
   const [isSaving, setIsSaving] = useState(false);
   const [goingCount, setGoingCount] = useState<number>(0);
   const [crewCountBase, setCrewCountBase] = useState<number>(0);
-  const [crewRooms, setCrewRooms] = useState<EventCrewRoom[]>([]);
-  const [isLoadingCrewRooms, setIsLoadingCrewRooms] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCrewPrompt, setShowCrewPrompt] = useState(false);
+  const [sourceUrl, setSourceUrl] = useState<string | null>(null);
+  const [attendeePreview, setAttendeePreview] = useState<EventAttendeePreview[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -37,14 +44,16 @@ export function EventDetailScreen({ route, navigation }: Props) {
       setIsLoadingCounts(true);
       setError(null);
       try {
-        const [metrics] = await Promise.all([
+        const [metrics, preview] = await Promise.all([
           listEventAudienceMetrics([event.id]),
+          listEventAttendeePreview(event.id, 12),
           refreshRsvps()
         ]);
         if (!active) return;
         const eventMetrics = metrics[event.id] ?? { goingCount: 0, lookingForCrewCount: 0 };
         setGoingCount(eventMetrics.goingCount);
         setCrewCountBase(eventMetrics.lookingForCrewCount);
+        setAttendeePreview(preview);
       } catch (e) {
         if (!active) return;
         setError(e instanceof Error ? e.message : "Failed to load event details.");
@@ -61,20 +70,18 @@ export function EventDetailScreen({ route, navigation }: Props) {
   useEffect(() => {
     let active = true;
 
-    async function loadCrewRooms() {
-      setIsLoadingCrewRooms(true);
-      const rooms = await listEventCrewRooms(event.id, session?.user?.id ?? null);
+    async function loadSourceUrl() {
+      const resolved = await getEventSourceUrl(event);
       if (active) {
-        setCrewRooms(rooms);
-        setIsLoadingCrewRooms(false);
+        setSourceUrl(resolved);
       }
     }
 
-    void loadCrewRooms();
+    void loadSourceUrl();
     return () => {
       active = false;
     };
-  }, [event.id, session?.user?.id]);
+  }, [event]);
 
   const rsvpStatus = rsvps[event.id] ?? null;
   const lookingForCrew = rsvpStatus === "going" ? Boolean(visibility[event.id]) : false;
@@ -82,10 +89,18 @@ export function EventDetailScreen({ route, navigation }: Props) {
   const eventGenres = (event.genreTags ?? []).filter((g) => g.trim());
   const crewCount = crewCountBase;
   const palette = useMemo(() => getEventPosterPalette(event), [event]);
-  const heroDate = useMemo(() => formatEventDateLong(event.startsAt), [event.startsAt]);
-  const heroMeta = `${event.venueName || "Venue TBA"} • ${getEventLocationSummary(event)}`;
+  const heroDateShort = useMemo(() => formatEventDateShort(event.startsAt), [event.startsAt]);
+  const heroDateLong = useMemo(() => formatEventDateLong(event.startsAt), [event.startsAt]);
   const locationInfo = useMemo(() => getEventLocationInfo(event), [event]);
-  const eventDescription = useMemo(() => getEventDescription(event), [event]);
+  const goingPreview = useMemo(
+    () => attendeePreview.filter((attendee) => attendee.rsvpStatus === "going"),
+    [attendeePreview]
+  );
+  const crewPreview = useMemo(
+    () => attendeePreview.filter((attendee) => attendee.lookingForCrew),
+    [attendeePreview]
+  );
+  const displayGenres = useMemo(() => (eventGenres.length > 0 ? eventGenres : ["EDM"]).slice(0, 2), [eventGenres]);
   const activitySupportText = useMemo(() => {
     if (isLoadingCounts) return null;
     if (goingCount === 0 && crewCount === 0) {
@@ -152,60 +167,20 @@ export function EventDetailScreen({ route, navigation }: Props) {
         if (nextStatus !== "going") {
           setShowCrewPrompt(false);
         }
-        const metrics = await listEventAudienceMetrics([event.id]);
+        const [metrics, preview] = await Promise.all([
+          listEventAudienceMetrics([event.id]),
+          listEventAttendeePreview(event.id, 12)
+        ]);
         const eventMetrics = metrics[event.id] ?? { goingCount: 0, lookingForCrewCount: 0 };
         setGoingCount(eventMetrics.goingCount);
         setCrewCountBase(eventMetrics.lookingForCrewCount);
+        setAttendeePreview(preview);
       } catch (error) {
         setError(toUserFacingError(error, "Couldn’t update your RSVP."));
       } finally {
         setIsSaving(false);
       }
     }
-  }
-
-  async function handleCreateCrewRoom() {
-    if (!session?.user?.id) {
-      return;
-    }
-
-    setIsSaving(true);
-    const result = await startEventCrewThreadSeed(session.user.id, event.id);
-    setIsSaving(false);
-    if (!result.ok || !result.roomId) {
-      setError(result.ok ? "Failed to create crew group." : result.error);
-      return;
-    }
-
-    const rooms = await listEventCrewRooms(event.id, session.user.id);
-    setCrewRooms(rooms);
-    navigation.navigate("EventCrewRoom", {
-      roomId: result.roomId,
-      roomTitle: result.title,
-      eventTitle: event.title
-    });
-  }
-
-  async function handleOpenCrewRoom(room: EventCrewRoom) {
-    if (!session?.user?.id) {
-      return;
-    }
-
-    if (!room.isMember) {
-      const joinResult = await joinEventCrewRoom(room.id, session.user.id);
-      if (!joinResult.ok) {
-        setError(joinResult.error);
-        return;
-      }
-      const rooms = await listEventCrewRooms(event.id, session.user.id);
-      setCrewRooms(rooms);
-    }
-
-    navigation.navigate("EventCrewRoom", {
-      roomId: room.id,
-      roomTitle: room.title,
-      eventTitle: event.title
-    });
   }
 
   async function handleCrewPress() {
@@ -220,27 +195,64 @@ export function EventDetailScreen({ route, navigation }: Props) {
     }
     setShowCrewPrompt(false);
 
-    const metrics = await listEventAudienceMetrics([event.id]);
+    const [metrics, preview] = await Promise.all([
+      listEventAudienceMetrics([event.id]),
+      listEventAttendeePreview(event.id, 12)
+    ]);
     const eventMetrics = metrics[event.id] ?? { goingCount: 0, lookingForCrewCount: 0 };
     setGoingCount(eventMetrics.goingCount);
     setCrewCountBase(eventMetrics.lookingForCrewCount);
+    setAttendeePreview(preview);
+  }
+
+  async function handleSourcePress() {
+    if (!sourceUrl) {
+      return;
+    }
+
+    try {
+      const supported = await Linking.canOpenURL(sourceUrl);
+      if (!supported) {
+        Alert.alert("Link unavailable", "This event source can’t be opened on this device.");
+        return;
+      }
+      await Linking.openURL(sourceUrl);
+    } catch {
+      Alert.alert("Link unavailable", "Couldn’t open the ticket source right now.");
+    }
   }
 
   return (
-    <ScrollView
-      style={styles.scroll}
-      contentContainerStyle={[
-        styles.container,
-        {
-          paddingTop: Math.max(insets.top + 10, 26),
-          paddingBottom: Math.max(insets.bottom + 24, 28)
-        }
-      ]}
-    >
-      <View style={styles.posterShell}>
-        <View style={[styles.posterHero, { backgroundColor: palette.base }]}>
+    <View style={styles.screen}>
+      <Pressable
+        style={[styles.floatingBackButton, { top: Math.max(insets.top + 8, 20) }]}
+        onPress={handleClose}
+        hitSlop={12}
+      >
+        <Text style={styles.posterBackButtonText}>‹</Text>
+      </Pressable>
+
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={[
+          styles.container,
+          {
+            paddingTop: 0,
+            paddingBottom: Math.max(insets.bottom + 104, 112)
+          }
+        ]}
+      >
+        <View style={styles.heroShell}>
+          <View
+            style={[
+              styles.posterHero,
+              {
+                backgroundColor: palette.base,
+                paddingTop: Math.max(insets.top + 16, 32)
+              }
+            ]}
+          >
           {event.flyerUrl ? <RemoteImage uri={event.flyerUrl} style={styles.posterFlyerImage} /> : null}
-          {event.flyerUrl ? <View style={styles.posterFlyerOverlay} /> : null}
           {!event.flyerUrl ? <View style={[styles.posterGlowA, { backgroundColor: palette.glowA }]} /> : null}
           {!event.flyerUrl ? <View style={[styles.posterGlowB, { backgroundColor: palette.glowB }]} /> : null}
           {!event.flyerUrl ? <View style={[styles.posterBeamA, { backgroundColor: palette.lineA }]} /> : null}
@@ -248,37 +260,40 @@ export function EventDetailScreen({ route, navigation }: Props) {
           {!event.flyerUrl ? <View style={[styles.posterBeamC, { backgroundColor: palette.lineC }]} /> : null}
           {!event.flyerUrl ? <View style={styles.posterGrid} /> : null}
 
-          <View style={styles.posterTopRow}>
-            <View style={styles.posterTopLeft}>
-              <Pressable style={styles.posterBackButton} onPress={handleClose} hitSlop={12}>
-                <Text style={styles.posterBackButtonText}>‹</Text>
-              </Pressable>
-              <View style={styles.posterStamp}>
-                <Text style={styles.posterStampText}>R4V3 EVENT</Text>
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.posterBottomFade} />
-
-          <View style={styles.posterHeadlineWrap}>
-            <Text style={styles.posterDate}>{heroDate}</Text>
-            <Text style={styles.posterTitle} numberOfLines={2}>{event.title}</Text>
-            <Text style={styles.posterMeta}>{heroMeta}</Text>
+          <LinearGradient
+            colors={[
+              "rgba(0,0,0,0)",
+              "rgba(0,0,0,0.14)",
+              "rgba(0,0,0,0.38)",
+              "rgba(0,0,0,0.68)",
+              "rgba(0,0,0,0.86)",
+              "rgba(0,0,0,0.96)"
+            ]}
+            locations={[0, 0.1, 0.35, 0.58, 0.8, 1]}
+            style={styles.posterBottomOverlay}
+          >
+            <Text style={styles.posterDate}>{heroDateShort}</Text>
+            <Text style={styles.posterTitle} numberOfLines={3}>{event.title}</Text>
             <View style={styles.genreChipRow}>
-              {(eventGenres.length > 0 ? eventGenres : ["EDM"]).slice(0, 4).map((genre) => (
+              {displayGenres.map((genre) => (
                 <View key={genre} style={styles.genreChip}>
                   <Text style={styles.genreChipText}>{genre}</Text>
                 </View>
               ))}
             </View>
-          </View>
+          </LinearGradient>
         </View>
 
-        <View style={styles.detailPanel}>
-          <View style={styles.countGrid}>
-            <StatBlock label="Going" value={isLoadingCounts ? "…" : String(goingCount)} />
-            <StatBlock label="Looking for Crew" value={isLoadingCounts ? "…" : String(crewCount)} />
+          <View style={styles.detailPanel}>
+            <View style={styles.countGrid}>
+            <View style={styles.statColumn}>
+                <StatBlock label="Going" value={isLoadingCounts ? "…" : String(goingCount)} />
+              <AvatarPile attendees={goingPreview} totalCount={goingCount} tone="warm" />
+            </View>
+            <View style={styles.statColumn}>
+              <StatBlock label="Looking for Crew" value={isLoadingCounts ? "…" : String(crewCount)} />
+              <AvatarPile attendees={crewPreview} totalCount={crewCount} tone="cool" />
+            </View>
           </View>
 
           {activitySupportText ? <Text style={styles.preCtaSupportText}>{activitySupportText}</Text> : null}
@@ -290,22 +305,19 @@ export function EventDetailScreen({ route, navigation }: Props) {
               disabled={isSaving}
             >
               <Text style={styles.goingButtonText}>
-                {isSaving ? "Saving..." : rsvpStatus === "going" ? "Going" : "Join Event"}
+                {isSaving ? "Saving..." : rsvpStatus === "going" ? "Leave Event" : "I'm Going"}
               </Text>
             </Pressable>
-          </View>
-
-          {rsvpStatus === "going" ? (
             <Pressable
               style={[styles.crewToggleButton, lookingForCrew && styles.crewToggleButtonActive]}
               onPress={() => void handleCrewPress()}
+              disabled={rsvpStatus !== "going" || isSaving}
             >
-              <View style={[styles.crewToggleDot, lookingForCrew && styles.crewToggleDotActive]} />
               <Text style={[styles.crewToggleText, lookingForCrew && styles.crewToggleTextActive]}>
-                {lookingForCrew ? "Looking for Crew" : "Find a Crew"}
+                {lookingForCrew ? "Looking for Crew" : "Find Crew"}
               </Text>
             </Pressable>
-          ) : null}
+          </View>
 
           {showCrewPrompt ? (
             <View style={styles.softPromptCard}>
@@ -322,59 +334,33 @@ export function EventDetailScreen({ route, navigation }: Props) {
             </View>
           ) : null}
 
-          {error ? <Text style={styles.error}>{error}</Text> : null}
+            {error ? <Text style={styles.error}>{error}</Text> : null}
+          </View>
         </View>
-      </View>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Event Info</Text>
-        <View style={styles.infoCard}>
-          <InfoRow label="Venue" value={event.venueName || "TBA"} />
-          <InfoRow label={locationInfo.label} value={locationInfo.value} />
-          <InfoRow label="Date" value={heroDate} />
-          <InfoRow label="Source" value={formatSourceLabel(event.sourcePrimary)} />
-        </View>
-      </View>
-
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>About this event</Text>
-        <View style={styles.musicPanel}>
-          <Text style={styles.musicPanelBody}>{eventDescription}</Text>
-        </View>
-      </View>
-
-      {rsvpStatus === "going" ? (
         <View style={styles.section}>
-          <View style={styles.sectionHeaderRow}>
-            <Text style={styles.sectionTitle}>Crew Groups</Text>
-            <Pressable style={styles.sectionActionButton} onPress={() => void handleCreateCrewRoom()} disabled={!session?.user?.id || isSaving}>
-              <Text style={styles.sectionActionButtonText}>{isSaving ? "Creating..." : "Create Group"}</Text>
-            </Pressable>
-          </View>
-          <Text style={styles.sectionSupportText}>Create smaller group chats for solo ravers or existing friend groups going together.</Text>
+          <Text style={styles.sectionTitle}>Event Info</Text>
           <View style={styles.infoCard}>
-            {isLoadingCrewRooms ? <Text style={styles.cardStateText}>Loading groups...</Text> : null}
-            {!isLoadingCrewRooms && crewRooms.length === 0 ? <Text style={styles.cardStateText}>No crew groups yet. Start the first one.</Text> : null}
-            {crewRooms.map((room, index) => (
-              <Pressable key={room.id} style={[styles.crewRoomRow, index === crewRooms.length - 1 && styles.crewRoomRowLast]} onPress={() => void handleOpenCrewRoom(room)}>
-                <View style={styles.crewRoomTextBlock}>
-                  <Text style={styles.crewRoomTitle}>{room.title}</Text>
-                  <Text style={styles.crewRoomMeta}>{room.memberCount}/{room.sizeCap} members • {room.isMember ? "Joined" : "Tap to join"}</Text>
-                </View>
-                <Text style={styles.crewRoomChevron}>›</Text>
-              </Pressable>
-            ))}
+            <InfoRow icon="📍" label="Venue" value={event.venueName || "TBA"} />
+            <InfoRow icon="⌖" label={locationInfo.label} value={locationInfo.value} />
+            <InfoRow icon="📅" label="Date" value={heroDateLong} />
+            <InfoRow
+              icon="↗"
+              label="Source"
+              value={formatSourceLabel(event.sourcePrimary)}
+              onPress={sourceUrl ? () => void handleSourcePress() : undefined}
+            />
           </View>
         </View>
-      ) : null}
 
-      {isLoadingCounts ? (
-        <View style={styles.loadingRow}>
-          <ActivityIndicator color={theme.colors.accent} />
-          <Text style={styles.loadingText}>Loading event activity...</Text>
-        </View>
-      ) : null}
-    </ScrollView>
+        {isLoadingCounts ? (
+          <View style={styles.loadingRow}>
+            <ActivityIndicator color={theme.colors.accent} />
+            <Text style={styles.loadingText}>Loading event activity...</Text>
+          </View>
+        ) : null}
+      </ScrollView>
+    </View>
   );
 }
 
@@ -387,13 +373,80 @@ function StatBlock(props: { label: string; value: string }) {
   );
 }
 
-function InfoRow(props: { label: string; value: string }) {
+function AvatarPile(props: { attendees: EventAttendeePreview[]; totalCount: number; tone: "warm" | "cool" }) {
+  if (props.totalCount <= 0) {
+    return <Text style={styles.avatarPileEmpty}>No one yet</Text>;
+  }
+
+  const palette = props.tone === "warm"
+    ? ["#6A4B38", "#A56A4A", "#D8A47A", "#3B2A23"]
+    : ["#37536A", "#4E7DA5", "#A8C0D8", "#26313D"];
+  const visibleAttendees = props.attendees.slice(0, 3);
+  const visibleCount = visibleAttendees.length;
+  const extra = Math.max(props.totalCount - visibleCount, 0);
+
   return (
-    <View style={styles.infoRow}>
-      <Text style={styles.infoRowLabel}>{props.label}</Text>
-      <Text style={styles.infoRowValue}>{props.value}</Text>
+    <View style={styles.avatarPile}>
+      {visibleAttendees.map((attendee, index) => (
+        <View
+          key={attendee.profileId}
+          style={[
+            styles.avatarBubble,
+            { backgroundColor: palette[index % palette.length], marginLeft: index === 0 ? 0 : -12, zIndex: visibleCount - index }
+          ]}
+        >
+          {attendee.profilePhotoUrl ? <RemoteImage uri={attendee.profilePhotoUrl} style={styles.avatarBubbleImage} /> : null}
+        </View>
+      ))}
+      {extra > 0 ? (
+        <View style={[styles.avatarBubble, styles.avatarBubbleExtra, { marginLeft: -12 }]}>
+          <Text style={styles.avatarBubbleExtraText}>+{extra}</Text>
+        </View>
+      ) : null}
     </View>
   );
+}
+
+function InfoRow(props: { icon: string; label: string; value: string; onPress?: (() => void) | undefined }) {
+  const content = (
+    <>
+      <View style={styles.infoRowLead}>
+        <Text style={styles.infoRowIcon}>{props.icon}</Text>
+        <Text style={styles.infoRowLabel}>{props.label}</Text>
+      </View>
+      <View style={styles.infoRowAction}>
+        <Text style={[styles.infoRowValue, props.onPress && styles.infoRowValueLink]} numberOfLines={2}>
+          {props.value}
+        </Text>
+      </View>
+    </>
+  );
+
+  if (props.onPress) {
+    return (
+      <Pressable style={styles.infoRow} onPress={props.onPress}>
+        {content}
+      </Pressable>
+    );
+  }
+
+  return (
+    <View style={styles.infoRow}>
+      {content}
+    </View>
+  );
+}
+
+function formatEventDateShort(startsAt: string) {
+  const date = new Date(startsAt);
+  if (Number.isNaN(date.getTime())) return startsAt;
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(date);
 }
 
 function formatEventDateLong(startsAt: string) {
@@ -450,30 +503,6 @@ function getEventPosterPalette(event: EventRecord) {
   };
 }
 
-function getEventDescription(event: EventRecord) {
-  const directDescription = event.description?.trim();
-  if (directDescription) {
-    return clampDescription(directDescription);
-  }
-
-  const curatedDescription = event.curationNote?.trim();
-  if (curatedDescription) {
-    return clampDescription(curatedDescription);
-  }
-
-  const genres = (event.genreTags ?? []).filter(Boolean);
-  if (genres.length > 0) {
-    return `A ${genres.slice(0, 3).join(", ")} event at ${event.venueName || "a venue to be announced"}. More details will be shared closer to the event.`;
-  }
-
-  return "More details about this event will be shared closer to the event date.";
-}
-
-function clampDescription(value: string) {
-  const compact = value.replace(/\s+/g, " ").trim();
-  return compact.length > 280 ? `${compact.slice(0, 277).trimEnd()}...` : compact;
-}
-
 function formatSourceLabel(source: EventRecord["sourcePrimary"]) {
   if (source === "ticketmaster") return "Ticketmaster";
   if (source === "posh") return "POSH";
@@ -483,40 +512,37 @@ function formatSourceLabel(source: EventRecord["sourcePrimary"]) {
 }
 
 const styles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    backgroundColor: "#000000"
+  },
   scroll: {
     flex: 1,
-    backgroundColor: "#0F0D0A"
+    backgroundColor: "#000000"
   },
   container: {
-    padding: 16,
-    gap: 14,
-    backgroundColor: "#0F0D0A"
+    paddingBottom: 28,
+    backgroundColor: "#000000"
   },
-  posterShell: {
+  heroShell: {
     gap: 0,
-    marginTop: -4
+    marginTop: 0
   },
   posterHero: {
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    minHeight: 340,
+    minHeight: 560,
     overflow: "hidden",
-    padding: 14
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 0,
+    justifyContent: "space-between"
   },
   posterFlyerImage: {
     ...StyleSheet.absoluteFillObject
   },
-  posterFlyerOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.34)"
-  },
   posterGrid: {
     position: "absolute",
     inset: 0,
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.02)"
+    borderWidth: 0
   },
   posterGlowA: {
     position: "absolute",
@@ -558,124 +584,92 @@ const styles = StyleSheet.create({
     height: 2,
     transform: [{ rotate: "-3deg" }]
   },
-  posterTopRow: {
-    flexDirection: "row",
-    justifyContent: "flex-start",
-    alignItems: "center"
-  },
-  posterTopLeft: {
-    flexDirection: "row",
+  floatingBackButton: {
+    position: "absolute",
+    left: 12,
+    width: 48,
+    height: 48,
     alignItems: "center",
-    gap: 8
+    justifyContent: "center",
+    zIndex: 10
   },
   posterBackButton: {
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 2
+    width: 28,
+    height: 28,
+    marginRight: 6
   },
   posterBackButtonText: {
     color: "#FFF8EE",
-    fontSize: 30,
-    lineHeight: 30,
-    marginTop: -2
-  },
-  posterStamp: {
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-    backgroundColor: "rgba(15,13,10,0.45)",
-    paddingHorizontal: 10,
-    paddingVertical: 6
-  },
-  posterStampText: {
-    color: "#FFF8EE",
-    fontSize: 10,
-    fontWeight: "800",
-    letterSpacing: 0.6
-  },
-  posterCloseButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-    backgroundColor: "rgba(8,8,8,0.45)",
-    alignItems: "center",
-    justifyContent: "center"
-  },
-  posterCloseButtonText: {
-    color: "#FFF8EE",
-    fontSize: 24,
-    lineHeight: 24,
+    fontSize: 28,
+    lineHeight: 28,
     marginTop: -1
   },
-  posterBottomFade: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: 180,
-    backgroundColor: "rgba(0,0,0,0.42)"
-  },
-  posterHeadlineWrap: {
+  posterBottomOverlay: {
     marginTop: "auto",
-    gap: 6
+    marginHorizontal: -16,
+    paddingHorizontal: 18,
+    paddingTop: 22,
+    paddingBottom: 38,
+    gap: 8,
+    zIndex: 3
   },
   posterDate: {
     color: "#F2E300",
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: "800"
-  },
-  posterDateSupport: {
-    color: "rgba(255,249,239,0.74)",
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: "600",
-    maxWidth: 280
   },
   posterTitle: {
     color: "#FFF8EE",
-    fontSize: 30,
-    lineHeight: 34,
+    fontSize: 27,
+    lineHeight: 29,
     fontWeight: "900"
-  },
-  posterMeta: {
-    color: "rgba(255,249,239,0.78)",
-    fontSize: 14,
-    fontWeight: "600"
   },
   genreChipRow: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
-    marginTop: 2
+    marginTop: 0
   },
   genreChip: {
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-    backgroundColor: "rgba(255,255,255,0.04)",
-    paddingHorizontal: 10,
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(12,12,12,0.54)",
+    paddingHorizontal: 12,
     paddingVertical: 6
   },
   genreChipText: {
     color: "#FFF8EE",
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: "700"
   },
   detailPanel: {
-    marginTop: 10,
-    marginHorizontal: 8,
-    borderRadius: 16,
+    marginTop: -10,
+    marginHorizontal: 16,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
-    backgroundColor: "rgba(20,17,13,0.8)",
-    padding: 12,
-    gap: 10
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(16,16,16,0.98)",
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 14,
+    gap: 10,
+    zIndex: 4,
+    shadowColor: "#000000",
+    shadowOpacity: 0.22,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8
   },
   countGrid: {
     flexDirection: "row",
     gap: 12
+  },
+  statColumn: {
+    flex: 1,
+    gap: 6
   },
   statBlock: {
     flex: 1,
@@ -685,78 +679,100 @@ const styles = StyleSheet.create({
   },
   statBlockValue: {
     color: "#FFF8EE",
-    fontSize: 20,
+    fontSize: 28,
     fontWeight: "800"
   },
   statBlockLabel: {
     color: "rgba(255,249,239,0.66)",
-    fontSize: 11,
-    fontWeight: "700"
+    fontSize: 10,
+    fontWeight: "500"
+  },
+  avatarPile: {
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: 34
+  },
+  avatarBubble: {
+    width: 32,
+    height: 32,
+    borderRadius: 999,
+    borderWidth: 2,
+    borderColor: "rgba(14,14,14,0.98)",
+    overflow: "hidden"
+  },
+  avatarBubbleImage: {
+    width: "100%",
+    height: "100%"
+  },
+  avatarBubbleExtra: {
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#2D2F34"
+  },
+  avatarBubbleExtraText: {
+    color: "#FFF8EE",
+    fontSize: 10,
+    fontWeight: "800"
+  },
+  avatarPileEmpty: {
+    color: "rgba(255,249,239,0.48)",
+    fontSize: 9,
+    fontWeight: "600"
   },
   preCtaSupportText: {
     color: "rgba(255,249,239,0.72)",
-    fontSize: 12,
-    lineHeight: 18,
+    fontSize: 10,
+    lineHeight: 14,
     fontWeight: "600",
     textAlign: "center",
-    marginTop: 2
+    marginTop: 0
   },
   actionRow: {
     flexDirection: "row",
+    gap: 10,
     marginTop: 2
   },
   goingButton: {
-    width: "100%",
-    minHeight: 48,
-    borderRadius: 14,
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(211,92,51,0.34)",
-    backgroundColor: "rgba(211,92,51,0.14)",
+    borderColor: "rgba(62,83,144,0.40)",
+    backgroundColor: "rgba(12,15,28,0.98)",
     alignItems: "center",
     justifyContent: "center"
   },
   goingButtonActive: {
-    backgroundColor: "#D65B2C",
-    borderColor: "#D65B2C"
+    backgroundColor: "rgba(18,24,40,1)",
+    borderColor: "rgba(105,132,219,0.48)"
   },
   goingButtonText: {
     color: "#FFF8EE",
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: "800"
   },
   crewToggleButton: {
-    width: "100%",
-    minHeight: 48,
-    borderRadius: 14,
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(255,255,255,0.03)",
+    borderColor: "rgba(181,88,45,0.42)",
+    backgroundColor: "rgba(24,13,8,0.98)",
     alignItems: "center",
     justifyContent: "center",
-    flexDirection: "row",
-    gap: 8,
     paddingHorizontal: 10
   },
   crewToggleButtonActive: {
-    borderColor: "rgba(211,92,51,0.34)",
-    backgroundColor: "rgba(211,92,51,0.12)"
-  },
-  crewToggleDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.28)"
-  },
-  crewToggleDotActive: {
-    backgroundColor: "#D65B2C"
+    borderColor: "#D65B2C",
+    backgroundColor: "rgba(211,92,51,0.18)"
   },
   crewToggleText: {
-    color: "rgba(255,249,239,0.82)",
-    fontSize: 13,
+    color: "#D97849",
+    fontSize: 12,
     fontWeight: "700"
   },
   crewToggleTextActive: {
-    color: "#FFF8EE"
+    color: "#FF9E6E"
   },
   softPromptCard: {
     borderRadius: 14,
@@ -815,138 +831,65 @@ const styles = StyleSheet.create({
     fontWeight: "600"
   },
   section: {
-    gap: 8
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingTop: 16
   },
   sectionTitle: {
     color: "#FFF8EE",
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "800"
-  },
-  sectionHeaderRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10
-  },
-  sectionActionButton: {
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "rgba(211,92,51,0.26)",
-    backgroundColor: "rgba(211,92,51,0.12)",
-    paddingHorizontal: 12,
-    paddingVertical: 8
-  },
-  sectionActionButtonText: {
-    color: "#FFF8EE",
-    fontSize: 12,
-    fontWeight: "800"
-  },
-  sectionSupportText: {
-    color: "rgba(255,249,239,0.66)",
-    fontSize: 12,
-    lineHeight: 18
   },
   infoCard: {
-    borderRadius: 16,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(255,255,255,0.02)",
+    backgroundColor: "rgba(255,255,255,0.025)",
     overflow: "hidden"
-  },
-  cardStateText: {
-    color: "rgba(255,249,239,0.72)",
-    fontSize: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 14
-  },
-  crewRoomRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.04)"
-  },
-  crewRoomRowLast: {
-    borderBottomWidth: 0
-  },
-  crewRoomTextBlock: {
-    flex: 1,
-    gap: 2
-  },
-  crewRoomTitle: {
-    color: "#FFF8EE",
-    fontSize: 13,
-    fontWeight: "800"
-  },
-  crewRoomMeta: {
-    color: "rgba(255,249,239,0.64)",
-    fontSize: 11,
-    fontWeight: "600"
-  },
-  crewRoomChevron: {
-    color: "rgba(255,249,239,0.56)",
-    fontSize: 18,
-    fontWeight: "700"
   },
   infoRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     gap: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.04)"
+    borderBottomColor: "rgba(255,255,255,0.05)"
+  },
+  infoRowLead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    flex: 1
+  },
+  infoRowIcon: {
+    color: "#FF6A2A",
+    fontSize: 17,
+    width: 18,
+    textAlign: "center"
   },
   infoRowLabel: {
-    color: "rgba(255,249,239,0.64)",
-    fontSize: 12
+    color: "rgba(255,249,239,0.62)",
+    fontSize: 12,
+    fontWeight: "500"
+  },
+  infoRowAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    flexShrink: 1,
+    maxWidth: "64%"
   },
   infoRowValue: {
     color: "#FFF8EE",
     fontSize: 12,
-    fontWeight: "700",
-    maxWidth: "62%",
+    fontWeight: "800",
+    maxWidth: "100%",
     textAlign: "right"
   },
-  musicPanel: {
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(255,255,255,0.02)",
-    padding: 12,
-    gap: 8
-  },
-  musicPanelTitle: {
-    color: "#FFF8EE",
-    fontSize: 14,
-    fontWeight: "800"
-  },
-  musicPanelBody: {
-    color: "rgba(255,249,239,0.72)",
-    fontSize: 12,
-    lineHeight: 18
-  },
-  musicTagWrap: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8
-  },
-  musicTag: {
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.07)",
-    backgroundColor: "rgba(255,255,255,0.03)",
-    paddingHorizontal: 9,
-    paddingVertical: 6
-  },
-  musicTagText: {
-    color: "rgba(255,249,239,0.86)",
-    fontSize: 11,
-    fontWeight: "700"
+  infoRowValueLink: {
+    maxWidth: "100%"
   },
   loadingRow: {
     flexDirection: "row",

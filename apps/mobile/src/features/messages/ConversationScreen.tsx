@@ -1,10 +1,10 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
 import {
   ActivityIndicator,
   AppState,
   Alert,
   KeyboardAvoidingView,
-  LayoutChangeEvent,
   Platform,
   Pressable,
   RefreshControl,
@@ -30,7 +30,8 @@ import {
   markConversationRead,
   sendMessage,
   type MessageItem,
-  unblockProfile
+  unblockProfile,
+  unmatchConversation
 } from "./messagesRepository";
 
 type Props = NativeStackScreenProps<MessagesStackParamList, "Conversation">;
@@ -70,6 +71,7 @@ const meetupQuickActions: MeetupQuickAction[] = [
 
 export function ConversationScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();
+  const tabBarHeight = useBottomTabBarHeight();
   const { session } = useAppState();
   const [messages, setMessages] = useState<MessageItem[]>([]);
   const [draft, setDraft] = useState("");
@@ -80,10 +82,13 @@ export function ConversationScreen({ navigation, route }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [arePromptsHidden, setArePromptsHidden] = useState(true);
-  const [composerHeight, setComposerHeight] = useState(160);
   const threadScrollRef = useRef<ScrollView | null>(null);
 
   const hasRealSession = Boolean(session?.user?.id);
+  const composerBottomInset = useMemo(() => {
+    const safeAreaBottom = Math.max(insets.bottom, 8);
+    return safeAreaBottom + tabBarHeight + 12;
+  }, [insets.bottom, tabBarHeight]);
   const visibleMessages = useMemo(
     () => (hasRealSession ? messages : demoByMatchId[route.params.matchId] ?? []),
     [hasRealSession, messages, route.params.matchId]
@@ -350,13 +355,6 @@ export function ConversationScreen({ navigation, route }: Props) {
     });
   }
 
-  function handleComposerLayout(event: LayoutChangeEvent) {
-    const nextHeight = Math.ceil(event.nativeEvent.layout.height);
-    if (nextHeight > 0 && nextHeight !== composerHeight) {
-      setComposerHeight(nextHeight);
-    }
-  }
-
   function openProfileReportPrompt() {
     if (!session?.user?.id) {
       Alert.alert("Sign in required", "Sign in to submit reports.");
@@ -380,6 +378,7 @@ export function ConversationScreen({ navigation, route }: Props) {
     Alert.alert("Conversation options", "Choose an action for this chat.", [
       { text: "Cancel", style: "cancel" },
       { text: "Report profile", onPress: openProfileReportPrompt },
+      { text: "Unmatch", style: "destructive", onPress: () => void confirmUnmatchConversation() },
       { text: "Block user", style: "destructive", onPress: () => void confirmBlockProfile() }
     ]);
   }
@@ -423,6 +422,34 @@ export function ConversationScreen({ navigation, route }: Props) {
         { text: "Block", style: "destructive", onPress: () => void handleBlockProfile() }
       ]
     );
+  }
+
+  function confirmUnmatchConversation() {
+    Alert.alert(
+      "Unmatch user?",
+      "This removes the match and deletes this direct conversation for both of you. This does not block them.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Unmatch", style: "destructive", onPress: () => void handleUnmatchConversation() }
+      ]
+    );
+  }
+
+  async function handleUnmatchConversation() {
+    const result = await unmatchConversation(route.params.matchId);
+    if (!result.ok) {
+      Alert.alert("Unmatch failed", result.error);
+      return;
+    }
+
+    Alert.alert("Unmatched", "This conversation has been removed.", [
+      {
+        text: "OK",
+        onPress: () => {
+          navigation.goBack();
+        }
+      }
+    ]);
   }
 
   async function handleBlockProfile() {
@@ -471,10 +498,7 @@ export function ConversationScreen({ navigation, route }: Props) {
       <ScrollView
         ref={threadScrollRef}
         style={styles.scroll}
-        contentContainerStyle={[
-          styles.container,
-          { paddingBottom: composerHeight + (arePromptsHidden ? 4 : 12) }
-        ]}
+        contentContainerStyle={styles.container}
         keyboardShouldPersistTaps="handled"
         alwaysBounceVertical
         bounces
@@ -543,8 +567,7 @@ export function ConversationScreen({ navigation, route }: Props) {
       </ScrollView>
 
       <View
-        style={[styles.composerWrap, { paddingBottom: Math.max(insets.bottom, 8) }]}
-        onLayout={handleComposerLayout}
+        style={[styles.composerWrap, { paddingBottom: composerBottomInset }]}
       >
         {!isBlocked ? (
           <View style={styles.meetupPanel}>
@@ -749,7 +772,7 @@ const styles = StyleSheet.create({
   composerWrap: {
     borderTopWidth: 1,
     borderTopColor: "rgba(255,255,255,0.06)",
-    backgroundColor: "#11100D",
+    backgroundColor: theme.colors.canvas,
     paddingHorizontal: 12,
     paddingTop: 8
   },

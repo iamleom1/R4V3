@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from "react";
 import { render, waitFor } from "@testing-library/react-native";
 
 import { AppProvider, useAppState } from "../AppProvider";
+import { deleteMyAccountFromSupabase } from "../../features/profile/profileRepository";
 
 const mockGetSupabaseClient = jest.fn();
 const mockTrackEvent = jest.fn();
@@ -85,6 +86,37 @@ function AuthHarness(props: { onReady: (snapshot: { authStatus: string; hasSessi
   return null;
 }
 
+function DeleteHarness(props: { onDone: (snapshot: { ok: boolean; authStatus: string; hasSession: boolean }) => void }) {
+  const { authStatus, session, deleteAccount } = useAppState();
+  const startedRef = useRef(false);
+  const resultRef = useRef<boolean | null>(null);
+
+  useEffect(() => {
+    if (authStatus !== "authenticated" || startedRef.current) {
+      return;
+    }
+    startedRef.current = true;
+
+    void deleteAccount().then((result) => {
+      resultRef.current = result.ok;
+    });
+  }, [authStatus, deleteAccount]);
+
+  useEffect(() => {
+    if (resultRef.current === null || authStatus !== "signed_out") {
+      return;
+    }
+
+    props.onDone({
+      ok: resultRef.current,
+      authStatus,
+      hasSession: Boolean(session?.user?.id)
+    });
+  }, [authStatus, props, session]);
+
+  return null;
+}
+
 describe("AppProvider", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -150,5 +182,52 @@ describe("AppProvider", () => {
     });
 
     expect(mockTrackEvent).toHaveBeenCalledWith("auth_session_restored", { source: "app_boot" });
+  });
+
+  it("signs the user out after account deletion succeeds", async () => {
+    const onDone = jest.fn();
+    const unsubscribe = jest.fn();
+    const mockSignOut = jest.fn(async () => ({ error: null }));
+
+    mockGetSupabaseClient.mockReturnValue({
+      auth: {
+        getSession: jest.fn(async () => ({
+          data: {
+            session: {
+              user: {
+                id: "user-123",
+                email: "leo@example.com"
+              }
+            }
+          }
+        })),
+        onAuthStateChange: jest.fn(() => ({
+          data: {
+            subscription: {
+              unsubscribe
+            }
+          }
+        })),
+        signOut: mockSignOut
+      }
+    });
+
+    (deleteMyAccountFromSupabase as jest.Mock).mockResolvedValueOnce({ ok: true, deleted: true });
+
+    render(
+      <AppProvider>
+        <DeleteHarness onDone={onDone} />
+      </AppProvider>
+    );
+
+    await waitFor(() => {
+      expect(mockSignOut).toHaveBeenCalled();
+    });
+
+    await waitFor(() => {
+      expect(onDone).toHaveBeenCalledWith({ ok: true, authStatus: "signed_out", hasSession: false });
+    });
+
+    expect(deleteMyAccountFromSupabase).toHaveBeenCalledWith("user-123");
   });
 });

@@ -1,7 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
 import {
   ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   RefreshControl,
@@ -14,16 +17,28 @@ import {
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppState } from "../../app/AppProvider";
+import { RemoteImage } from "../../components/RemoteImage";
 import { getSupabaseClient } from "../../lib/supabase";
 import { toUserFacingError } from "../../lib/userFacingErrors";
 import { theme } from "../../theme";
 import type { MessagesStackParamList } from "./MessagesNavigator";
-import { listCrewGroupMessages, sendCrewGroupMessage, type CrewGroupMessage } from "./messagesRepository";
+import {
+  addCrewGroupMembers,
+  leaveCrewGroup,
+  listCrewGroupMembers,
+  listCrewGroupMessages,
+  listGroupChatCandidates,
+  sendCrewGroupMessage,
+  type CrewGroupMember,
+  type CrewGroupMessage,
+  type GroupChatCandidate
+} from "./messagesRepository";
 
 type Props = NativeStackScreenProps<MessagesStackParamList, "GroupChat">;
 
-export function GroupChatScreen({ route }: Props) {
+export function GroupChatScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();
+  const tabBarHeight = useBottomTabBarHeight();
   const { session } = useAppState();
   const [messages, setMessages] = useState<CrewGroupMessage[]>([]);
   const [draft, setDraft] = useState("");
@@ -31,9 +46,23 @@ export function GroupChatScreen({ route }: Props) {
   const [isSending, setIsSending] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [members, setMembers] = useState<CrewGroupMember[]>([]);
+  const [isManageMembersOpen, setIsManageMembersOpen] = useState(false);
+  const [candidatePool, setCandidatePool] = useState<GroupChatCandidate[]>([]);
+  const [selectedInviteIds, setSelectedInviteIds] = useState<string[]>([]);
+  const [isSavingMembers, setIsSavingMembers] = useState(false);
+  const [isLeavingGroup, setIsLeavingGroup] = useState(false);
 
   const hasRealSession = Boolean(session?.user?.id);
+  const composerBottomInset = useMemo(() => {
+    const safeAreaBottom = Math.max(insets.bottom, 8);
+    return safeAreaBottom + tabBarHeight + 12;
+  }, [insets.bottom, tabBarHeight]);
   const visibleMessages = useMemo(() => (hasRealSession ? messages : []), [hasRealSession, messages]);
+  const inviteCandidates = useMemo(
+    () => candidatePool.filter((candidate) => !members.some((member) => member.profileId === candidate.profileId)),
+    [candidatePool, members]
+  );
 
   async function loadMessages(options?: { refresh?: boolean }) {
     const isRefresh = Boolean(options?.refresh);
@@ -58,6 +87,15 @@ export function GroupChatScreen({ route }: Props) {
   useEffect(() => {
     void loadMessages();
   }, [route.params.groupId]);
+
+  useEffect(() => {
+    if (!session?.user?.id) {
+      setMembers([]);
+      return;
+    }
+
+    void loadMembers();
+  }, [route.params.groupId, session?.user?.id]);
 
   useEffect(() => {
     if (!session?.user?.id) {
@@ -120,7 +158,91 @@ export function GroupChatScreen({ route }: Props) {
     setDraft("");
   }
 
+  async function loadMembers() {
+    try {
+      const rows = await listCrewGroupMembers(route.params.groupId);
+      setMembers(rows);
+    } catch {
+      setMembers([]);
+    }
+  }
+
+  async function openManageMembers() {
+    if (!session?.user?.id) {
+      Alert.alert("Sign in required", "Sign in to manage this crew.");
+      return;
+    }
+
+    try {
+      const [candidateRows, memberRows] = await Promise.all([
+        listGroupChatCandidates(session.user.id),
+        listCrewGroupMembers(route.params.groupId)
+      ]);
+      setCandidatePool(candidateRows);
+      setMembers(memberRows);
+      setSelectedInviteIds([]);
+      setIsManageMembersOpen(true);
+    } catch (e) {
+      Alert.alert("Crew unavailable", toUserFacingError(e, "Failed to load crew members."));
+    }
+  }
+
+  function toggleInvite(profileId: string) {
+    setSelectedInviteIds((prev) =>
+      prev.includes(profileId) ? prev.filter((id) => id !== profileId) : [...prev, profileId]
+    );
+  }
+
+  async function handleAddMembers() {
+    if (selectedInviteIds.length === 0) {
+      Alert.alert("Select matches", "Pick at least one matched user to add.");
+      return;
+    }
+
+    setIsSavingMembers(true);
+    const result = await addCrewGroupMembers({
+      groupId: route.params.groupId,
+      memberIds: selectedInviteIds
+    });
+    setIsSavingMembers(false);
+
+    if (!result.ok) {
+      Alert.alert("Add failed", result.error);
+      return;
+    }
+
+    if (result.addedCount < 1) {
+      Alert.alert("No one added", "Only matched users who are not already in the crew can be added.");
+      return;
+    }
+
+    await loadMembers();
+    setSelectedInviteIds([]);
+    setIsManageMembersOpen(false);
+  }
+
+  function confirmLeaveCrewGroup() {
+    Alert.alert("Delete crew chat?", "This removes the crew chat from your list. Other members will keep it.", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Delete", style: "destructive", onPress: () => void handleLeaveCrewGroup() }
+    ]);
+  }
+
+  async function handleLeaveCrewGroup() {
+    setIsLeavingGroup(true);
+    const result = await leaveCrewGroup(route.params.groupId);
+    setIsLeavingGroup(false);
+
+    if (!result.ok) {
+      Alert.alert("Delete failed", result.error);
+      return;
+    }
+
+    navigation.goBack();
+  }
+
   return (
+    <>
     <KeyboardAvoidingView
       style={styles.root}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -149,6 +271,23 @@ export function GroupChatScreen({ route }: Props) {
           <Text style={styles.headerEyebrow}>Crew Chat</Text>
           <Text style={styles.headerTitle}>{route.params.title}</Text>
           <Text style={styles.headerMeta}>Start bringing more people into the plan from here.</Text>
+          <View style={styles.headerActionRow}>
+            <Pressable style={styles.headerActionButton} onPress={() => void openManageMembers()}>
+              <Text style={styles.headerActionButtonText}>Add matched users</Text>
+            </Pressable>
+            <Pressable style={styles.headerActionButton} onPress={confirmLeaveCrewGroup} disabled={isLeavingGroup}>
+              <Text style={styles.headerActionButtonText}>{isLeavingGroup ? "Deleting..." : "Delete crew chat"}</Text>
+            </Pressable>
+          </View>
+          {members.length > 0 ? (
+            <View style={styles.memberChipRow}>
+              {members.map((member) => (
+                <View key={member.profileId} style={styles.memberChip}>
+                  <Text style={styles.memberChipText} numberOfLines={1}>{member.displayName}</Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
         </View>
 
         {error ? (
@@ -189,7 +328,7 @@ export function GroupChatScreen({ route }: Props) {
         </View>
       </ScrollView>
 
-      <View style={[styles.composerWrap, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+      <View style={[styles.composerWrap, { paddingBottom: composerBottomInset }]}>
         <View style={styles.composer}>
           <TextInput
             value={draft}
@@ -205,6 +344,68 @@ export function GroupChatScreen({ route }: Props) {
         </View>
       </View>
     </KeyboardAvoidingView>
+    <Modal
+      visible={isManageMembersOpen}
+      transparent
+      animationType="fade"
+      onRequestClose={() => {
+        if (!isSavingMembers) {
+          setIsManageMembersOpen(false);
+        }
+      }}
+    >
+      <View style={styles.modalBackdrop}>
+        <View style={styles.modalCard}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Add Matched Users</Text>
+            <Pressable style={styles.modalCloseButton} onPress={() => setIsManageMembersOpen(false)} disabled={isSavingMembers}>
+              <Text style={styles.modalCloseButtonText}>Cancel</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.modalBodyText}>Invite people you already matched with into this crew chat.</Text>
+          <ScrollView style={styles.modalMemberList} contentContainerStyle={styles.modalMemberListContent}>
+            {inviteCandidates.length > 0 ? (
+              inviteCandidates.map((candidate) => {
+                const selected = selectedInviteIds.includes(candidate.profileId);
+                return (
+                  <Pressable
+                    key={candidate.profileId}
+                    style={[styles.inviteRow, selected && styles.inviteRowSelected]}
+                    onPress={() => toggleInvite(candidate.profileId)}
+                    disabled={isSavingMembers}
+                  >
+                    <View style={styles.inviteAvatar}>
+                      {candidate.photoUrl ? (
+                        <RemoteImage uri={candidate.photoUrl} style={styles.inviteAvatarPhoto} />
+                      ) : (
+                        <Text style={styles.inviteAvatarText}>{initials(candidate.displayName)}</Text>
+                      )}
+                    </View>
+                    <View style={styles.inviteBody}>
+                      <Text style={styles.inviteName}>{candidate.displayName}</Text>
+                      <Text style={styles.inviteMeta}>{candidate.city ?? "Matched user"}</Text>
+                    </View>
+                    <View style={[styles.inviteCheck, selected && styles.inviteCheckSelected]}>
+                      <Text style={styles.inviteCheckText}>{selected ? "✓" : "+"}</Text>
+                    </View>
+                  </Pressable>
+                );
+              })
+            ) : (
+              <Text style={styles.modalEmptyText}>No additional matched users are available to add.</Text>
+            )}
+          </ScrollView>
+          <Pressable
+            style={[styles.modalPrimaryButton, (selectedInviteIds.length === 0 || isSavingMembers) && styles.modalPrimaryButtonDisabled]}
+            onPress={() => void handleAddMembers()}
+            disabled={selectedInviteIds.length === 0 || isSavingMembers}
+          >
+            <Text style={styles.modalPrimaryButtonText}>{isSavingMembers ? "Adding..." : "Add to Crew"}</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+    </>
   );
 }
 
@@ -222,6 +423,18 @@ function formatTime(iso: string) {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(d);
 }
 
+function initials(name: string) {
+  return (
+    name
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase() ?? "")
+      .join("") || "R"
+  );
+}
+
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: theme.colors.canvas },
   scroll: { flex: 1, backgroundColor: theme.colors.canvas },
@@ -237,6 +450,45 @@ const styles = StyleSheet.create({
   headerEyebrow: { color: theme.colors.textSecondary, ...theme.type.caption },
   headerTitle: { color: theme.colors.textPrimary, ...theme.type.titleMd },
   headerMeta: { color: theme.colors.textSecondary, ...theme.type.caption },
+  headerActionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 6
+  },
+  headerActionButton: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.03)",
+    paddingHorizontal: 10,
+    paddingVertical: 7
+  },
+  headerActionButtonText: {
+    color: "#FFF8EE",
+    fontSize: 12,
+    fontWeight: "700"
+  },
+  memberChipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10
+  },
+  memberChip: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(255,255,255,0.03)",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    maxWidth: "100%"
+  },
+  memberChipText: {
+    color: "rgba(255,248,238,0.78)",
+    fontSize: 12,
+    fontWeight: "700"
+  },
   error: { color: "#FFD1D1", fontWeight: "600" },
   errorCard: {
     borderRadius: 16,
@@ -310,7 +562,7 @@ const styles = StyleSheet.create({
   composerWrap: {
     borderTopWidth: 1,
     borderTopColor: "rgba(255,255,255,0.06)",
-    backgroundColor: "#11100D",
+    backgroundColor: theme.colors.canvas,
     paddingHorizontal: 12,
     paddingTop: 8
   },
@@ -334,5 +586,141 @@ const styles = StyleSheet.create({
     paddingVertical: 10
   },
   sendButtonDisabled: { opacity: 0.55 },
-  sendButtonText: { color: "#FFF8EE", fontWeight: "800" }
+  sendButtonText: { color: "#FFF8EE", fontWeight: "800" },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.68)",
+    justifyContent: "center",
+    padding: 18
+  },
+  modalCard: {
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "#11100D",
+    padding: 16,
+    gap: 12,
+    maxHeight: "82%"
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12
+  },
+  modalTitle: {
+    color: "#FFF8EE",
+    fontSize: 20,
+    fontWeight: "800"
+  },
+  modalCloseButton: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.03)",
+    paddingHorizontal: 10,
+    paddingVertical: 6
+  },
+  modalCloseButtonText: {
+    color: "#FFF8EE",
+    fontSize: 12,
+    fontWeight: "700"
+  },
+  modalBodyText: {
+    color: "rgba(235,227,214,0.58)",
+    fontSize: 13,
+    lineHeight: 18
+  },
+  modalMemberList: {
+    maxHeight: 320
+  },
+  modalMemberListContent: {
+    gap: 8
+  },
+  inviteRow: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(255,255,255,0.02)",
+    padding: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10
+  },
+  inviteRowSelected: {
+    borderColor: "rgba(255,154,84,0.28)",
+    backgroundColor: "rgba(255,154,84,0.09)"
+  },
+  inviteAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "#1A1712",
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden"
+  },
+  inviteAvatarPhoto: {
+    ...StyleSheet.absoluteFillObject
+  },
+  inviteAvatarText: {
+    color: "#FFF8EE",
+    fontSize: 14,
+    fontWeight: "800"
+  },
+  inviteBody: {
+    flex: 1,
+    gap: 2
+  },
+  inviteName: {
+    color: "#FFF8EE",
+    fontSize: 14,
+    fontWeight: "700"
+  },
+  inviteMeta: {
+    color: "rgba(235,227,214,0.50)",
+    fontSize: 12
+  },
+  inviteCheck: {
+    width: 28,
+    height: 28,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.03)"
+  },
+  inviteCheckSelected: {
+    borderColor: "rgba(255,154,84,0.30)",
+    backgroundColor: "rgba(255,154,84,0.14)"
+  },
+  inviteCheckText: {
+    color: "#FFF8EE",
+    fontSize: 14,
+    fontWeight: "800"
+  },
+  modalEmptyText: {
+    color: "rgba(235,227,214,0.46)",
+    fontSize: 12,
+    lineHeight: 18,
+    paddingVertical: 8
+  },
+  modalPrimaryButton: {
+    borderRadius: 16,
+    backgroundColor: theme.colors.accent,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 14
+  },
+  modalPrimaryButtonDisabled: {
+    opacity: 0.5
+  },
+  modalPrimaryButtonText: {
+    color: "#FFF8EE",
+    fontSize: 14,
+    fontWeight: "800"
+  }
 });

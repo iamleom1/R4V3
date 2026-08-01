@@ -27,6 +27,7 @@ export function RemoteImage({ uri, style, fallback = null, contentFit = "cover",
       source={normalizedUri}
       style={style}
       contentFit={contentFit}
+      contentPosition="center"
       cachePolicy="memory-disk"
       transition={transition}
       onError={() => setImageFailed(true)}

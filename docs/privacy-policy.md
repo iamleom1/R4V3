@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Last updated: April 23, 2026
+Last updated: June 10, 2026
 
 ## Overview
 
@@ -56,4 +56,7 @@ Users can delete their account in-app from the Profile screen. Support can also 
 
 ## Contact
 
-For closed beta support, use the TestFlight feedback channel or the support email listed in App Store Connect.
+For privacy questions or account requests, contact:
+
+- support email: `support@YOUR_DOMAIN`
+- support page: `https://YOUR_DOMAIN/support`

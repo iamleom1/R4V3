@@ -115,3 +115,24 @@ export async function upsertCuratedEvent(input: {
 
   return { ok: true as const, eventId: row.event_id as string };
 }
+
+export async function setCuratedEventHiddenGlobally(eventId: string, isHidden: boolean) {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false as const, error: "Supabase is not configured." };
+  }
+
+  const { data, error } = await (supabase.rpc as any)("moderator_set_event_hidden_globally", {
+    p_event_id: eventId,
+    p_is_hidden: isHidden
+  });
+
+  if (error || !Array.isArray(data)) {
+    return { ok: false as const, error: error?.message ?? "Failed to update event visibility." };
+  }
+
+  return {
+    ok: true as const,
+    updatedEventIds: data.map((row: { event_id?: string | null }) => row.event_id).filter(Boolean) as string[]
+  };
+}

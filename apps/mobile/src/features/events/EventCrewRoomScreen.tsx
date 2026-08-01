@@ -234,7 +234,7 @@ const styles = StyleSheet.create({
   composerWrap: {
     borderTopWidth: 1,
     borderTopColor: "rgba(255,255,255,0.06)",
-    backgroundColor: "#11100D",
+    backgroundColor: theme.colors.canvas,
     paddingHorizontal: 12,
     paddingTop: 8
   },

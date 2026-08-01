@@ -12,22 +12,6 @@ export function validateProfileDraft(draft: ProfileDraft): ProfileDraftValidatio
     errors.push("Name is required.");
   }
 
-  if (!draft.birthdate.trim()) {
-    errors.push("Age is required.");
-  }
-
-  if (!draft.gender.trim()) {
-    errors.push("Gender is required.");
-  }
-
-  if (!draft.city.trim()) {
-    errors.push("Location is required.");
-  }
-
-  if (!draft.guidelinesAccepted) {
-    errors.push("Guidelines must be accepted.");
-  }
-
   return { isValid: errors.length === 0, errors };
 }
 

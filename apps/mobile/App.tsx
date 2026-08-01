@@ -4,6 +4,7 @@ import { NavigationContainer, DefaultTheme, createNavigationContainerRef } from 
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -64,24 +65,55 @@ function MainTabs() {
             backgroundColor: route.name === "Match" ? "#11100D" : theme.colors.canvas
           },
           tabBarStyle: {
-            backgroundColor: "#090807",
-            borderTopColor: "rgba(255,255,255,0.10)",
-            height: 76,
-            paddingTop: 4,
-            paddingBottom: 8
+            position: "absolute",
+            left: 14,
+            right: 14,
+            bottom: 12,
+            backgroundColor: "transparent",
+            borderTopWidth: 0,
+            height: 66,
+            paddingTop: 6,
+            paddingBottom: 6,
+            paddingHorizontal: 8,
+            borderRadius: 30,
+            shadowColor: "#000000",
+            shadowOpacity: 0.45,
+            shadowRadius: 24,
+            shadowOffset: { width: 0, height: 12 },
+            elevation: 0
           },
+          tabBarBackground: () => (
+            <View style={styles.tabBarGlass}>
+              <LinearGradient
+                colors={["rgba(255,255,255,0.10)", "rgba(255,255,255,0.03)", "rgba(255,255,255,0.00)"]}
+                start={{ x: 0.2, y: 0 }}
+                end={{ x: 0.8, y: 1 }}
+                style={StyleSheet.absoluteFill}
+              />
+              <LinearGradient
+                colors={["rgba(19,19,19,0.96)", "rgba(11,11,11,0.94)"]}
+                start={{ x: 0.5, y: 0 }}
+                end={{ x: 0.5, y: 1 }}
+                style={StyleSheet.absoluteFill}
+              />
+              <View style={styles.tabBarGlassHighlight} />
+            </View>
+          ),
           tabBarItemStyle: {
-            paddingVertical: 3
+            marginHorizontal: 2,
+            borderRadius: 24,
+            paddingVertical: 2
           },
+          tabBarActiveBackgroundColor: "rgba(255,255,255,0.13)",
           tabBarLabelStyle: {
-            fontSize: 11,
+            fontSize: 12,
             fontWeight: "600",
-            letterSpacing: 0.15,
-            marginTop: 1
+            letterSpacing: 0,
+            marginTop: 0
           },
           tabBarIcon: ({ focused, color }) => <TabIcon routeName={route.name} focused={focused} color={color} />,
-          tabBarActiveTintColor: "#F4EEE4",
-          tabBarInactiveTintColor: "rgba(255,249,239,0.52)"
+          tabBarActiveTintColor: "#F2EEE6",
+          tabBarInactiveTintColor: "rgba(255,255,255,0.46)"
         };
       }}
     >
@@ -115,7 +147,6 @@ function TabIcon(props: { routeName: keyof RootTabs; focused: boolean; color: st
   if (routeName === "Match") {
     return (
       <View style={shellStyle}>
-        {focused ? <View style={tabIconStyles.focusDot} /> : null}
         <View style={[tabIconStyles.matchDiamond, { borderColor: color }]} />
         <View style={[tabIconStyles.matchCenterDot, { backgroundColor: color }]} />
         {focused ? <ActiveTabLine /> : null}
@@ -126,11 +157,11 @@ function TabIcon(props: { routeName: keyof RootTabs; focused: boolean; color: st
   if (routeName === "Discover") {
     return (
       <View style={shellStyle}>
-        {focused ? <View style={tabIconStyles.focusDot} /> : null}
-        <View style={[tabIconStyles.compassRing, { borderColor: color }]} />
-        <View style={[tabIconStyles.compassCore, { backgroundColor: color }]} />
-        <View style={[tabIconStyles.compassNeedle, { backgroundColor: color }]} />
-        <View style={[tabIconStyles.compassNeedleTail, { borderTopColor: color }]} />
+        <View style={[tabIconStyles.calendarBody, { borderColor: color }]}>
+          <View style={[tabIconStyles.calendarBinderLeft, { backgroundColor: color }]} />
+          <View style={[tabIconStyles.calendarBinderRight, { backgroundColor: color }]} />
+          <View style={[tabIconStyles.calendarDivider, { backgroundColor: color }]} />
+        </View>
         {focused ? <ActiveTabLine /> : null}
       </View>
     );
@@ -139,7 +170,6 @@ function TabIcon(props: { routeName: keyof RootTabs; focused: boolean; color: st
   if (routeName === "Messages") {
     return (
       <View style={shellStyle}>
-        {focused ? <View style={tabIconStyles.focusDot} /> : null}
         <View style={[tabIconStyles.chatBubble, { borderColor: color }]}>
           <View style={[tabIconStyles.chatLine, { backgroundColor: color }]} />
           <View style={[tabIconStyles.chatLineShort, { backgroundColor: color }]} />
@@ -152,7 +182,6 @@ function TabIcon(props: { routeName: keyof RootTabs; focused: boolean; color: st
 
   return (
     <View style={shellStyle}>
-      {focused ? <View style={tabIconStyles.focusDot} /> : null}
       <View style={[tabIconStyles.profileHead, { borderColor: color }]} />
       <View style={[tabIconStyles.profileBody, { borderColor: color }]} />
       {focused ? <ActiveTabLine /> : null}
@@ -317,88 +346,80 @@ export default function App() {
 
 const tabIconStyles = StyleSheet.create({
   shell: {
-    width: 34,
+    width: 38,
     height: 28,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 10
+    borderRadius: 12
   },
   shellFocused: {
-    backgroundColor: "rgba(255,255,255,0.015)"
-  },
-  focusDot: {
-    position: "absolute",
-    top: 0,
-    width: 5,
-    height: 5,
-    borderRadius: 999,
-    backgroundColor: "#D35C33"
+    backgroundColor: "transparent"
   },
   activeLine: {
     position: "absolute",
-    bottom: -6,
-    width: 26,
-    height: 4,
+    bottom: -5,
+    width: 30,
+    height: 3,
     borderRadius: 999,
     overflow: "hidden",
     flexDirection: "row"
   },
   activeLinePurple: {
-    flex: 1,
-    backgroundColor: "#7A3CFF"
+    width: 18,
+    backgroundColor: "#7157FF"
   },
   activeLinePink: {
-    width: 9,
-    backgroundColor: "#FF2C8B"
+    flex: 1,
+    backgroundColor: "#FF6A33"
+  },
+  calendarBody: {
+    position: "absolute",
+    width: 19,
+    height: 16,
+    borderRadius: 4,
+    borderWidth: 1.7,
+    alignItems: "center"
+  },
+  calendarBinderLeft: {
+    position: "absolute",
+    top: -2,
+    left: 4,
+    width: 2.4,
+    height: 5,
+    borderRadius: 2
+  },
+  calendarBinderRight: {
+    position: "absolute",
+    top: -2,
+    right: 4,
+    width: 2.4,
+    height: 5,
+    borderRadius: 2
+  },
+  calendarDivider: {
+    position: "absolute",
+    top: 5,
+    left: 2,
+    right: 2,
+    height: 1.4,
+    borderRadius: 2
   },
   matchDiamond: {
-    width: 13,
-    height: 13,
+    width: 14,
+    height: 14,
     borderWidth: 1.5,
     borderRadius: 4,
     transform: [{ rotate: "45deg" }]
   },
   matchCenterDot: {
     position: "absolute",
-    width: 3,
-    height: 3,
+    width: 3.5,
+    height: 3.5,
     borderRadius: 999
-  },
-  compassRing: {
-    width: 16,
-    height: 16,
-    borderRadius: 999,
-    borderWidth: 1.6
-  },
-  compassCore: {
-    position: "absolute",
-    width: 3,
-    height: 3,
-    borderRadius: 999
-  },
-  compassNeedle: {
-    position: "absolute",
-    width: 2.5,
-    height: 9,
-    borderRadius: 2,
-    transform: [{ rotate: "38deg" }]
-  },
-  compassNeedleTail: {
-    position: "absolute",
-    width: 0,
-    height: 0,
-    borderLeftWidth: 3,
-    borderRightWidth: 3,
-    borderTopWidth: 5,
-    borderLeftColor: "transparent",
-    borderRightColor: "transparent",
-    top: 13,
-    left: 16,
-    transform: [{ rotate: "38deg" }]
   },
   chatBubble: {
-    width: 18,
-    height: 14,
+    width: 19,
+    height: 15,
     borderRadius: 5,
     borderWidth: 1.5,
     alignItems: "center",
@@ -427,15 +448,15 @@ const tabIconStyles = StyleSheet.create({
     left: 19
   },
   profileHead: {
-    width: 8,
-    height: 8,
+    width: 8.5,
+    height: 8.5,
     borderRadius: 999,
     borderWidth: 1.5
   },
   profileBody: {
     position: "absolute",
     bottom: 4,
-    width: 15,
+    width: 16,
     height: 9,
     borderTopLeftRadius: 8,
     borderTopRightRadius: 8,
@@ -453,5 +474,22 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.canvas,
     alignItems: "center",
     justifyContent: "center"
+  },
+  tabBarGlass: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 30,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(12,12,12,0.94)"
+  },
+  tabBarGlassHighlight: {
+    position: "absolute",
+    top: 1,
+    left: 26,
+    right: 26,
+    height: 14,
+    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.08)"
   }
 });

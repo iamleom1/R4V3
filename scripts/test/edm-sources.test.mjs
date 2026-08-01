@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { analyzeEventQuality } from "../lib/event-quality.mjs";
-import { deriveGenreTags } from "../lib/source-shared.mjs";
+import { deriveGenreTags, extractCityFromAddress } from "../lib/source-shared.mjs";
 import { extractDiceEventFromEventPage, mapDiceEvent, regionMatchesDiceEvent } from "../sources/dice.mjs";
 import { mapPoshMarketplaceEvent } from "../sources/posh.mjs";
 
@@ -14,20 +14,20 @@ const fixturesDir = path.join(__dirname, "fixtures");
 
 const diceRegion = {
   mode: "sitemap",
-  name: "San Diego County",
-  city: "San Diego",
+  name: "Los Angeles County",
+  city: "Los Angeles",
   region: "CA",
   country: "US",
-  cityNames: ["San Diego"]
+  cityNames: ["Los Angeles"]
 };
 
 const poshRegion = {
-  name: "Orange County",
-  city: "Orange County",
+  name: "Pomona-Ontario Corridor",
+  city: "Ontario",
   region: "CA",
   country: "US",
-  lat: 33.7175,
-  lon: -117.8311
+  lat: 34.0633,
+  lon: -117.6509
 };
 
 test("DICE event-page parser extracts and normalizes an EDM event", async () => {
@@ -39,8 +39,8 @@ test("DICE event-page parser extracts and normalizes an EDM event", async () => 
   assert.ok(normalized);
   assert.equal(normalized.provider, "dice");
   assert.equal(normalized.providerEventId, "evt_123");
-  assert.equal(normalized.city, "San Diego");
-  assert.equal(normalized.venueName, "Nova SD");
+  assert.equal(normalized.city, "Los Angeles");
+  assert.equal(normalized.venueName, "Sound Nightclub");
   assert.equal(normalized.flyerUrl, "https://cdn.example.com/flyer.jpg");
   assert.equal(regionMatchesDiceEvent(normalized, rawEvent, diceRegion), true);
   assert.ok(normalized.genreTags.includes("techno"));
@@ -54,8 +54,8 @@ test("POSH marketplace mapper normalizes an EDM event", async () => {
   assert.ok(normalized);
   assert.equal(normalized.provider, "posh");
   assert.equal(normalized.providerEventId, "posh_evt_123");
-  assert.equal(normalized.city, "Costa Mesa");
-  assert.equal(normalized.venueName, "Costa Mesa Warehouse");
+  assert.equal(normalized.city, "Ontario");
+  assert.equal(normalized.venueName, "Ontario Warehouse");
   assert.equal(normalized.flyerUrl, "https://cdn.example.com/posh-flyer.jpg");
   assert.ok(normalized.genreTags.includes("house"));
   assert.ok(normalized.genreTags.includes("techno"));
@@ -67,16 +67,16 @@ test("event quality analyzer flags duplicates and malformed events", () => {
       provider: "dice",
       providerEventId: "evt_1",
       title: "Warehouse Techno Night",
-      venueName: "Nova SD",
-      city: "San Diego",
+      venueName: "Sound Nightclub",
+      city: "Los Angeles",
       startsAt: "2026-04-12T05:00:00.000Z"
     },
     {
       provider: "posh",
       providerEventId: "evt_2",
       title: "Warehouse Techno Night",
-      venueName: "Nova SD",
-      city: "San Diego",
+      venueName: "Sound Nightclub",
+      city: "Los Angeles",
       startsAt: "2026-04-12T05:00:00.000Z"
     },
     {
@@ -101,4 +101,11 @@ test("genre derivation captures hard techno and afters labels", () => {
   assert.ok(tags.includes("hard techno"));
   assert.ok(tags.includes("afters"));
   assert.ok(tags.includes("rave"));
+});
+
+test("city extraction prefers the actual city over state and zip fragments", () => {
+  assert.equal(extractCityFromAddress("1642 N Las Palmas Ave, Los Angeles, CA 90028"), "Los Angeles");
+  assert.equal(extractCityFromAddress("Ontario, CA 91764"), "Ontario");
+  assert.equal(extractCityFromAddress("123 Main St Los Angeles CA 90028"), "Los Angeles");
+  assert.equal(extractCityFromAddress("CA 90028"), null);
 });

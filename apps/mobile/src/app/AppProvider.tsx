@@ -120,6 +120,7 @@ export function AppProvider({ children }: PropsWithChildren) {
   const [profileSaveError, setProfileSaveError] = useState<string | null>(null);
   const [matchFilters, setMatchFilters] = useState<MatchFiltersDraft>(defaultMatchFilters);
   const pushProfileIdRef = useRef<string | null>(null);
+  const lastAutosavedProfileRef = useRef<string>("");
 
   useEffect(() => {
     installCrashReporting();
@@ -147,7 +148,7 @@ export function AppProvider({ children }: PropsWithChildren) {
       }
     });
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, nextSession) => {
       setSession(nextSession);
       setProfileHydrationComplete(!nextSession);
       setAuthStatus(nextSession ? "authenticated" : "signed_out");
@@ -186,19 +187,58 @@ export function AppProvider({ children }: PropsWithChildren) {
 
       const remoteDraft = await loadProfileDraftFromSupabase(session.user.id);
       if (remoteDraft) {
-        setProfileDraft((prev) => ({
-          ...prev,
-          ...remoteDraft,
-          guidelinesAccepted: prev.guidelinesAccepted
-        }));
+        const hydratedDraft = {
+          ...defaultProfileDraft,
+          ...remoteDraft
+        };
+        setProfileDraft(hydratedDraft);
+        lastAutosavedProfileRef.current = JSON.stringify(hydratedDraft);
         setProfileSaveStatus("idle");
         setProfileSaveError(null);
+      } else {
+        const seededDraft = {
+          ...defaultProfileDraft,
+          displayName: deriveDisplayNameFromEmail(session.user.email)
+        };
+        setProfileDraft(seededDraft);
+        lastAutosavedProfileRef.current = JSON.stringify(seededDraft);
       }
       setProfileHydrationComplete(true);
     }
 
     void hydrateProfile();
   }, [session?.user?.id]);
+
+  useEffect(() => {
+    if (!session?.user?.id || !profileHydrationComplete) {
+      return;
+    }
+
+    const serializedDraft = JSON.stringify(profileDraft);
+    if (serializedDraft === lastAutosavedProfileRef.current) {
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      void (async () => {
+        setProfileSaveStatus("saving");
+        setProfileSaveError(null);
+
+        const result = await upsertProfileDraftToSupabase(session.user!.id, profileDraft);
+        if (!result.ok) {
+          void recordError(result.error, { source: "autosave_profile_draft" });
+          setProfileSaveStatus("error");
+          setProfileSaveError(result.error);
+          return;
+        }
+
+        lastAutosavedProfileRef.current = serializedDraft;
+        setProfileSaveStatus("saved");
+      })();
+    }, 600);
+
+    return () => clearTimeout(timeout);
+  }, [profileDraft, profileHydrationComplete, session?.user?.id]);
 
   useEffect(() => {
     let active = true;
@@ -243,7 +283,7 @@ export function AppProvider({ children }: PropsWithChildren) {
     options?: { requireFullValidation?: boolean; markOnboardingComplete?: boolean }
   ) {
     const nextDraft: ProfileDraft = options?.markOnboardingComplete
-      ? { ...currentDraft, onboardingCompleted: true }
+      ? { ...currentDraft, onboardingCompleted: true, guidelinesAccepted: true }
       : currentDraft;
 
     if (options?.requireFullValidation) {
@@ -298,18 +338,27 @@ export function AppProvider({ children }: PropsWithChildren) {
         setSession(null);
         setAuthStatus("signed_out");
         setProfileDraft(defaultProfileDraft);
+        lastAutosavedProfileRef.current = JSON.stringify(defaultProfileDraft);
         setProfileSaveStatus("idle");
         setProfileSaveError(null);
       },
       deleteAccount: async () => {
-        const result = await deleteMyAccountFromSupabase();
+        if (!session?.user?.id) {
+          return { ok: false as const, error: "No authenticated user." };
+        }
+        const result = await deleteMyAccountFromSupabase(session.user.id);
         if (!result.ok) {
           void recordError(result.error, { source: "delete_account" });
           return result;
         }
+        const supabase = getSupabaseClient();
+        if (supabase) {
+          await supabase.auth.signOut().catch(() => undefined);
+        }
         setSession(null);
         setAuthStatus("signed_out");
         setProfileDraft(defaultProfileDraft);
+        lastAutosavedProfileRef.current = JSON.stringify(defaultProfileDraft);
         setProfileSaveStatus("idle");
         setProfileSaveError(null);
         return result;
@@ -343,6 +392,25 @@ export function AppProvider({ children }: PropsWithChildren) {
   );
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
+}
+
+function deriveDisplayNameFromEmail(email?: string | null) {
+  if (!email) {
+    return "";
+  }
+
+  const local = email.split("@")[0] ?? "";
+  const cleaned = local.replace(/[._-]+/g, " ").trim();
+  if (!cleaned) {
+    return "";
+  }
+
+  return cleaned
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part[0].toUpperCase() + part.slice(1))
+    .join("")
+    .slice(0, 40);
 }
 
 export function useAppState() {

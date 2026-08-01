@@ -94,5 +94,5 @@ The main remaining work is release hardening:
 ## 7. Related Docs
 
 - Architecture: [docs/architecture.md](/Users/iamleom/Desktop/R4V3/docs/architecture.md)
-- TestFlight checklist: [docs/testflight-demo-checklist.md](/Users/iamleom/Desktop/R4V3/docs/testflight-demo-checklist.md)
+- App Store launch checklist: [docs/app-store-launch-checklist.md](/Users/iamleom/Desktop/R4V3/docs/app-store-launch-checklist.md)
 - Backend hardening: [docs/backend-hardening.md](/Users/iamleom/Desktop/R4V3/docs/backend-hardening.md)

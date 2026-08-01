@@ -9,6 +9,6 @@ export function AppScreen({ children }: PropsWithChildren) {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: "#11100D"
+    backgroundColor: theme.colors.canvas
   }
 });

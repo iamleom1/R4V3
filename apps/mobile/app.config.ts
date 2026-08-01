@@ -16,7 +16,7 @@ const config: ExpoConfig = {
   slug: "r4v3",
   owner: "r4v3",
   scheme: "r4v3",
-  version: "0.1.0",
+  version: "0.1.1",
   runtimeVersion: {
     policy: "appVersion"
   },
@@ -28,6 +28,7 @@ const config: ExpoConfig = {
   assetBundlePatterns: ["**/*"],
   ios: {
     supportsTablet: false,
+    usesAppleSignIn: true,
     buildNumber: readEnv("EXPO_IOS_BUILD_NUMBER", "1"),
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,
@@ -41,7 +42,7 @@ const config: ExpoConfig = {
     permissions: ["ACCESS_COARSE_LOCATION", "ACCESS_FINE_LOCATION"],
     package: readEnv("EXPO_ANDROID_PACKAGE", "com.r4v3.app")
   },
-  plugins: ["@react-native-community/datetimepicker", "expo-notifications"],
+  plugins: ["@react-native-community/datetimepicker", "expo-notifications", "expo-apple-authentication"],
   extra: {
     eas: {
       projectId: "4652ccde-861e-4de9-82d3-35b040734568"

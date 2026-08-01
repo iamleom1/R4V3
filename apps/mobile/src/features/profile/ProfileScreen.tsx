@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Slider from "@react-native-community/slider";
+import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
@@ -16,7 +17,8 @@ import { isCurrentUserModerator } from "./moderationRepository";
 import type { ProfileStackParamList } from "./ProfileNavigator";
 
 const vibeOptions = ["Solo-friendly", "Small crew", "Open crew", "Sober-friendly", "Stick together", "Chill meetup", "Afters", "First-timer friendly"];
-const genreOptions = ["House", "Techno", "Trance", "DnB", "Dubstep", "UKG", "Hardgroove", "Disco"];
+const genreOptions = ["House", "Techno", "Hard Techno", "RAVE", "EDM", "Trance", "DnB", "Dubstep", "UKG", "Hardgroove", "Disco"];
+const summaryVibeOptions = ["Solo-friendly", "Small crew", "Open crew", "Sober-friendly", "Stick together", "Chill meetup", "Afters", "First-timer friendly"];
 const pronounOptions = ["she/her", "he/him", "they/them", "she/they", "he/they", "any pronouns", "prefer not to say"];
 const smokingOptions = ["Never", "Occasionally", "Socially", "Regularly", "Prefer not to say"];
 const drinkingOptions = ["Never", "Rarely", "Socially", "Often", "Sober", "Prefer not to say"];
@@ -27,32 +29,9 @@ const zodiacOptions = [
 const heightOptions = buildHeightOptions();
 const MIN_AGE = 18;
 const MAX_AGE = 50;
-const crewSignalSpotlightCards = [
-  {
-    label: "Small crew",
-    subtitle: "Tight group, low noise",
-    iconVariant: "pair",
-    glyph: "PAIR",
-    palette: { backgroundColor: "#1D1712", borderColor: "rgba(153,124,78,0.28)", orb: "rgba(162,124,76,0.12)", beam: "rgba(224,178,116,0.10)" }
-  },
-  {
-    label: "Open crew",
-    subtitle: "Meet new people",
-    iconVariant: "radar",
-    glyph: "OPEN",
-    palette: { backgroundColor: "#131A24", borderColor: "rgba(94,126,189,0.28)", orb: "rgba(95,139,214,0.12)", beam: "rgba(144,185,255,0.10)" }
-  },
-  {
-    label: "Chill meetup",
-    subtitle: "Low-key energy",
-    iconVariant: "chill",
-    glyph: "CHILL",
-    palette: { backgroundColor: "#1E1413", borderColor: "rgba(201,101,71,0.26)", orb: "rgba(214,122,89,0.12)", beam: "rgba(255,170,132,0.10)" }
-  }
-] as const;
-
 export function ProfileScreen() {
   const insets = useSafeAreaInsets();
+  const tabBarHeight = useBottomTabBarHeight();
   const navigation = useNavigation<NativeStackNavigationProp<ProfileStackParamList>>();
   const { session, profileDraft, profileSaveStatus, profileSaveError, updateProfileDraft, saveProfileDraft, signOut, deleteAccount } = useAppState();
   const [photoSlots, setPhotoSlots] = useState<Array<ProfilePhoto | null>>([null, null, null, null, null, null]);
@@ -81,18 +60,17 @@ export function ProfileScreen() {
       photo: hasPhoto,
       bio: hasShortBio,
       vibes: hasEnoughVibes,
-      genres: hasEnoughGenres,
-      guidelines: profileDraft.guidelinesAccepted
+      genres: hasEnoughGenres
     }),
-    [hasEnoughGenres, hasEnoughVibes, hasPhoto, hasShortBio, profileDraft.guidelinesAccepted]
+    [hasEnoughGenres, hasEnoughVibes, hasPhoto, hasShortBio]
   );
   const crewReadinessCount = Object.values(crewReadinessChecks).filter(Boolean).length;
-  const crewReadinessPct = Math.round((crewReadinessCount / 5) * 100);
-  const isCrewReadinessComplete = crewReadinessCount === 5;
+  const crewReadinessPct = Math.round((crewReadinessCount / 4) * 100);
+  const isCrewReadinessComplete = crewReadinessCount === 4;
   const crewReadinessLockedReason =
     isCrewReadinessComplete
       ? null
-      : "Crew matching is locked until you add 1 photo, a bio, 1 vibe, 1 genre, and accept guidelines.";
+      : "Crew matching is locked until you add 1 photo, a bio, 1 vibe, and 1 genre.";
 
   const ageText = useMemo(() => formatAgeFromBirthdate(profileDraft.birthdate), [profileDraft.birthdate]);
   const selectedZodiacSigns = useMemo(() => parseCsvList(profileDraft.zodiac), [profileDraft.zodiac]);
@@ -126,11 +104,25 @@ export function ProfileScreen() {
     () => normalizeStoredInterestedGenders(profileDraft.interestedGenders),
     [profileDraft.interestedGenders]
   );
-  useEffect(() => {
-    if (!isCrewReadinessComplete && profileDraft.communityModeEnabled) {
-      updateProfileDraft({ communityModeEnabled: false });
+  const connectionSummaryChips = useMemo(() => {
+    const chips: Array<{ eyebrow: string; label: string }> = [];
+
+    for (const vibe of summaryVibeOptions.filter((tag) => profileDraft.vibeTags.includes(tag)).slice(0, 2)) {
+      chips.push({
+        eyebrow: summaryEyebrowForVibe(vibe),
+        label: vibe === "Open crew" ? "Open to new people" : vibe
+      });
     }
-  }, [isCrewReadinessComplete, profileDraft.communityModeEnabled, updateProfileDraft]);
+    if (profileDraft.crewStyle) chips.push({ eyebrow: "GROUP", label: `Crew size: ${profileDraft.crewStyle}` });
+    for (const genre of profileDraft.musicGenres.slice(0, 2)) {
+      chips.push({ eyebrow: "MUSIC", label: genre });
+    }
+    return chips.slice(0, 4);
+  }, [profileDraft.crewStyle, profileDraft.musicGenres, profileDraft.vibeTags]);
+  const contentBottomInset = useMemo(
+    () => Math.max(insets.bottom + tabBarHeight + 24, 108),
+    [insets.bottom, tabBarHeight]
+  );
 
   function toggleVibeTag(tag: string) {
     const next = profileDraft.vibeTags.includes(tag)
@@ -148,17 +140,23 @@ export function ProfileScreen() {
 
   function handleToggleOpenToCrewMatching() {
     const next = !profileDraft.communityModeEnabled;
-    if (next && !isCrewReadinessComplete) {
-      Alert.alert(
-        "Complete profile first",
-        "Add 1 photo, a bio, 1 vibe, 1 genre, and accept guidelines before opening crew matching."
-      );
-      return;
-    }
     updateProfileDraft({
       communityModeEnabled: next,
       datingModeEnabled: false
     });
+  }
+
+  function handleSignOutPress() {
+    Alert.alert("Sign out?", "Are you sure you want to log out of R4V3?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Sign Out",
+        style: "destructive",
+        onPress: () => {
+          void signOut();
+        }
+      }
+    ]);
   }
 
   useEffect(() => {
@@ -335,10 +333,11 @@ export function ProfileScreen() {
         <ScrollView
           ref={scrollRef}
           style={styles.scroll}
-          contentContainerStyle={[styles.container, { paddingTop: Math.max(insets.top + 8, 18), paddingBottom: Math.max(insets.bottom + 24, 28) }]}
+          contentContainerStyle={[styles.container, { paddingTop: Math.max(insets.top - 10, 0), paddingBottom: contentBottomInset }]}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+          automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
         >
           <View style={styles.heroCard}>
             <View style={styles.heroNoiseBand} />
@@ -380,7 +379,9 @@ export function ProfileScreen() {
             <View style={styles.progressCopy}>
               <Text style={styles.progressLabel}>Crew Readiness</Text>
               <Text style={styles.progressTitle}>{crewReadinessPct}% Complete</Text>
-              <Text style={styles.progressSubtitle}>Finish your profile to start matching</Text>
+              <Text style={styles.progressSubtitle}>
+                {isCrewReadinessComplete ? "You're all set to match and connect" : "Finish your profile to start matching"}
+              </Text>
             </View>
           </View>
           <View style={styles.progressTrack}>
@@ -391,7 +392,6 @@ export function ProfileScreen() {
             <ReadinessItem label="Add bio →" complete={crewReadinessChecks.bio} onPress={() => handleReadinessPress("bio")} />
             <ReadinessItem label="Pick 1 vibe →" complete={crewReadinessChecks.vibes} onPress={() => handleReadinessPress("vibes")} />
             <ReadinessItem label="Pick 1 genre →" complete={crewReadinessChecks.genres} onPress={() => handleReadinessPress("genres")} />
-            <ReadinessItem label="Accept guidelines →" complete={crewReadinessChecks.guidelines} onPress={() => handleReadinessPress("guidelines")} />
           </View>
           {!isCrewReadinessComplete ? (
             <Text style={styles.panelFootnote}>Unlock event-based matching by completing the steps above.</Text>
@@ -400,15 +400,15 @@ export function ProfileScreen() {
 
         <View style={styles.heroActionRow}>
           <Pressable style={styles.heroPrimaryButton} onPress={() => scrollTo(crewSignalsY)}>
-            <Text style={styles.heroPrimaryButtonText}>Complete Profile</Text>
+            <Text style={styles.heroPrimaryButtonText}>View Profile</Text>
           </Pressable>
         </View>
-      </View>
 
-      <View style={styles.heroMetricsRow}>
-        <MiniStat label="Photos" value={`${photoSlots.filter(Boolean).length}/6`} />
-        <MiniStat label="Vibes" value={`${profileDraft.vibeTags.length}`} />
-        <MiniStat label="Genres" value={`${profileDraft.musicGenres.length}`} />
+        <View style={styles.heroMetricsRow}>
+          <MiniStat label="Photos" value={`${photoSlots.filter(Boolean).length}/6`} />
+          <MiniStat label="Vibes" value={`${profileDraft.vibeTags.length}`} />
+          <MiniStat label="Genres" value={`${profileDraft.musicGenres.length}`} />
+        </View>
       </View>
       <View onLayout={(event) => setCrewSignalsY(event.nativeEvent.layout.y)} />
 
@@ -440,49 +440,47 @@ export function ProfileScreen() {
         </View>
       </Panel>
 
-      <Panel title="Crew Signals" subtitle="What you want your crew to feel like">
-        <Text style={styles.infoSectionLabel}>Crew Mood</Text>
-        <View style={styles.crewSignalSpotlightGrid}>
-          {crewSignalSpotlightCards.map((option) => {
-            const selected = profileDraft.vibeTags.includes(option.label);
-            return (
-              <Pressable
-                key={option.label}
-                onPress={() => toggleVibeTag(option.label)}
-                style={[
-                  styles.crewSignalSpotlightCard,
-                  option.palette,
-                  selected && styles.crewSignalSpotlightCardSelected
-                ]}
-              >
-                <View style={[styles.crewSignalSpotlightOrb, { backgroundColor: option.palette.orb }]} />
-                <View style={[styles.crewSignalSpotlightBeam, { backgroundColor: option.palette.beam }]} />
-                <View style={styles.crewSignalSpotlightTopRow}>
-                  <View style={styles.crewSignalSpotlightTextWrap}>
-                    <Text style={styles.crewSignalSpotlightTitle}>{option.label}</Text>
-                    <Text style={styles.crewSignalSpotlightSubtitle}>{option.subtitle}</Text>
-                  </View>
-                  <View style={[styles.crewSignalSpotlightBadge, selected && styles.crewSignalSpotlightBadgeSelected]}>
-                    <Text style={[styles.crewSignalSpotlightBadgeText, selected && styles.crewSignalSpotlightBadgeTextSelected]}>
-                      {option.glyph}
-                    </Text>
-                  </View>
-                </View>
-                <View style={styles.crewSignalSpotlightFooter}>
-                  <CrewSignalIcon variant={option.iconVariant} selected={selected} />
-                  <Text style={[styles.crewSignalSpotlightAction, selected && styles.crewSignalSpotlightActionSelected]}>
-                    {selected ? "Selected" : "Tap to choose"}
-                  </Text>
-                </View>
-              </Pressable>
-            );
-          })}
+      <Panel title="How You Connect" subtitle="These help us match you with the right people and crews.">
+        <View style={styles.connectionHeaderRow}>
+          <View style={styles.connectionHeaderCopy} />
+          <Pressable
+            style={styles.connectionEditButton}
+            onPress={() => {
+              setShowAllVibes(true);
+              setShowAllGenres(true);
+              scrollTo(crewSignalsY);
+            }}
+          >
+            <Text style={styles.connectionEditButtonText}>Edit</Text>
+          </Pressable>
+        </View>
+        <View style={styles.connectionSummaryGrid}>
+          {connectionSummaryChips.map((chip) => (
+            <View key={`${chip.eyebrow}-${chip.label}`} style={styles.connectionSummaryChip}>
+              <Text style={styles.connectionSummaryEyebrow}>{chip.eyebrow}</Text>
+              <Text style={styles.connectionSummaryText}>{chip.label}</Text>
+            </View>
+          ))}
+          {connectionSummaryChips.length === 0 ? (
+            <View style={styles.connectionSummaryChip}>
+              <Text style={styles.connectionSummaryEyebrow}>START</Text>
+              <Text style={styles.connectionSummaryText}>Pick vibes, genres, and crew size</Text>
+            </View>
+          ) : null}
         </View>
 
-        <Text style={styles.infoSectionLabel}>Crew Vibes</Text>
-        <View style={styles.chipGrid}>
-          {visibleVibeOptions.filter((tag) => !crewSignalSpotlightCards.some((card) => card.label === tag)).map((tag) => (
-            <Chip key={tag} label={tag} selected={profileDraft.vibeTags.includes(tag)} onPress={() => toggleVibeTag(tag)} />
+        <View style={styles.connectionDivider} />
+
+        <Text style={styles.connectionSectionTitle}>Crew Vibes</Text>
+        <View style={styles.connectionChipRow}>
+          {visibleVibeOptions.map((tag) => (
+            <Pressable
+              key={tag}
+              style={[styles.connectionChip, profileDraft.vibeTags.includes(tag) && styles.connectionChipSelected]}
+              onPress={() => toggleVibeTag(tag)}
+            >
+              <Text style={[styles.connectionChipText, profileDraft.vibeTags.includes(tag) && styles.connectionChipTextSelected]}>{tag}</Text>
+            </Pressable>
           ))}
         </View>
         {vibeOptions.length > 4 ? (
@@ -491,10 +489,18 @@ export function ProfileScreen() {
           </Pressable>
         ) : null}
 
-        <Text style={styles.infoSectionLabel}>Genres</Text>
-        <View style={styles.chipGrid}>
+        <View style={styles.connectionDivider} />
+
+        <Text style={styles.connectionSectionTitle}>Genres</Text>
+        <View style={styles.connectionChipRow}>
           {visibleGenreOptions.map((tag) => (
-            <Chip key={tag} label={tag} selected={profileDraft.musicGenres.includes(tag)} onPress={() => toggleGenre(tag)} />
+            <Pressable
+              key={tag}
+              style={[styles.connectionChip, profileDraft.musicGenres.includes(tag) && styles.connectionChipSelected]}
+              onPress={() => toggleGenre(tag)}
+            >
+              <Text style={[styles.connectionChipText, profileDraft.musicGenres.includes(tag) && styles.connectionChipTextSelected]}>{tag}</Text>
+            </Pressable>
           ))}
         </View>
         {genreOptions.length > 4 ? (
@@ -503,15 +509,18 @@ export function ProfileScreen() {
           </Pressable>
         ) : null}
 
-        <Text style={styles.infoSectionLabel}>Crew Size</Text>
-        <View style={styles.chipGrid}>
+        <View style={styles.connectionDivider} />
+
+        <Text style={styles.connectionSectionTitle}>Crew Size</Text>
+        <View style={styles.connectionChipRow}>
           {["Solo", "1-2", "3-5", "6+"].map((option) => (
-            <Chip
+            <Pressable
               key={option}
-              label={option}
-              selected={profileDraft.crewStyle === option}
+              style={[styles.connectionChip, profileDraft.crewStyle === option && styles.connectionChipSelected]}
               onPress={() => updateProfileDraft({ crewStyle: profileDraft.crewStyle === option ? "" : option })}
-            />
+            >
+              <Text style={[styles.connectionChipText, profileDraft.crewStyle === option && styles.connectionChipTextSelected]}>{option}</Text>
+            </Pressable>
           ))}
         </View>
       </Panel>
@@ -610,24 +619,7 @@ export function ProfileScreen() {
           onPress={handleToggleOpenToCrewMatching}
           disabled={!isCrewReadinessComplete}
         />
-        <ToggleRow
-          label="Guidelines Accepted"
-          description="Required for crew discovery."
-          value={profileDraft.guidelinesAccepted}
-          onPress={() => updateProfileDraft({ guidelinesAccepted: !profileDraft.guidelinesAccepted })}
-        />
-        {!profileDraft.guidelinesAccepted ? (
-          <Button
-            label="Review Guidelines"
-            variant="ghost"
-            onPress={() =>
-              Alert.alert(
-                "Community Guidelines",
-                "Accept the guidelines before turning on crew discovery."
-              )
-            }
-          />
-        ) : null}
+        <Text style={styles.panelFootnote}>Community guidelines were accepted during onboarding.</Text>
       </Panel>
       </View>
 
@@ -641,6 +633,7 @@ export function ProfileScreen() {
             {profileSaveStatus === "saved" ? <Text style={styles.successText}>Profile saved.</Text> : null}
             {profileSaveError ? <Text style={styles.errorText}>{profileSaveError}</Text> : null}
             {crewReadinessLockedReason ? <Text style={styles.panelFootnote}>Complete the checklist above to start meeting people going to your events.</Text> : null}
+            <Text style={styles.panelFootnote}>Profile changes save automatically.</Text>
 
             <View style={styles.buttonStack}>
               {isModerator ? (
@@ -652,8 +645,7 @@ export function ProfileScreen() {
                   <Button label="System Alerts" variant="secondary" onPress={() => navigation.navigate("SystemAlerts")} />
                 </>
               ) : null}
-              <Button label="Save Profile" variant="secondary" onPress={() => void saveProfileDraft()} />
-              <Button label="Sign Out" variant="ghost" onPress={() => void signOut()} />
+              <Button label="Sign Out" variant="ghost" onPress={handleSignOutPress} />
               <Button label="Delete Account" variant="ghost" onPress={() => setIsDeleteModalOpen(true)} />
             </View>
           </Panel>
@@ -721,47 +713,13 @@ function MiniStat(props: { label: string; value: string }) {
 function ReadinessItem(props: { label: string; complete: boolean; onPress: () => void }) {
   return (
     <Pressable onPress={props.onPress} style={styles.readinessItem}>
-      <Text style={[styles.readinessIcon, props.complete ? styles.readinessIconComplete : styles.readinessIconIncomplete]}>
-        {props.complete ? "✔" : "✘"}
-      </Text>
-      <Text style={styles.readinessLabel}>{props.label}</Text>
+      <View style={[styles.readinessIconWrap, props.complete ? styles.readinessIconWrapComplete : styles.readinessIconWrapIncomplete]}>
+        <Text style={[styles.readinessIcon, props.complete ? styles.readinessIconComplete : styles.readinessIconIncomplete]}>
+          {props.complete ? "✓" : "•"}
+        </Text>
+      </View>
+      <Text style={[styles.readinessLabel, props.complete ? styles.readinessLabelComplete : styles.readinessLabelIncomplete]}>{props.label}</Text>
     </Pressable>
-  );
-}
-
-function CrewSignalIcon(props: { variant: "pair" | "radar" | "chill"; selected: boolean }) {
-  if (props.variant === "pair") {
-    return (
-      <View style={styles.crewSignalIconPairWrap}>
-        <View style={[styles.crewSignalIconPairPerson, props.selected && styles.crewSignalIconPairPersonSelected]}>
-          <View style={[styles.crewSignalIconPairHead, props.selected && styles.crewSignalIconPairHeadSelected]} />
-          <View style={[styles.crewSignalIconPairBody, props.selected && styles.crewSignalIconPairBodySelected]} />
-        </View>
-        <View style={[styles.crewSignalIconPairPerson, props.selected && styles.crewSignalIconPairPersonSelected]}>
-          <View style={[styles.crewSignalIconPairHead, props.selected && styles.crewSignalIconPairHeadSelected]} />
-          <View style={[styles.crewSignalIconPairBody, props.selected && styles.crewSignalIconPairBodySelected]} />
-        </View>
-      </View>
-    );
-  }
-
-  if (props.variant === "chill") {
-    return (
-      <View style={styles.crewSignalIconChillWrap}>
-        <View style={[styles.crewSignalIconMoon, props.selected && styles.crewSignalIconMoonSelected]} />
-        <View style={styles.crewSignalIconMoonCutout} />
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.crewSignalIconRadarWrap}>
-      <View style={[styles.crewSignalIconRadarRingOuter, props.selected && styles.crewSignalIconRadarRingOuterSelected]} />
-      <View style={[styles.crewSignalIconRadarRingInner, props.selected && styles.crewSignalIconRadarRingInnerSelected]} />
-      <View style={[styles.crewSignalIconRadarCore, props.selected && styles.crewSignalIconRadarCoreSelected]} />
-      <View style={[styles.crewSignalIconRadarSweep, props.selected && styles.crewSignalIconRadarSweepSelected]} />
-      <View style={[styles.crewSignalIconRadarBlip, props.selected && styles.crewSignalIconRadarBlipSelected]} />
-    </View>
   );
 }
 
@@ -1030,29 +988,29 @@ const styles = StyleSheet.create({
   },
   scroll: {
     flex: 1,
-    backgroundColor: "#11100D"
+    backgroundColor: theme.colors.canvas
   },
   container: {
     paddingHorizontal: 12,
-    gap: 22,
-    backgroundColor: "#11100D"
+    gap: 18,
+    backgroundColor: theme.colors.canvas
   },
   heroCard: {
     borderRadius: 22,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.035)",
-    backgroundColor: "#100D0A",
-    padding: 15,
-    gap: 14,
+    borderColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "#0C0C0D",
+    padding: 14,
+    gap: 12,
     overflow: "hidden"
   },
   heroNoiseBand: {
     position: "absolute",
     left: -20,
     right: -20,
-    top: 34,
+    top: 28,
     height: 20,
-    backgroundColor: "rgba(211,92,51,0.12)",
+    backgroundColor: "rgba(211,92,51,0.08)",
     transform: [{ rotate: "-5deg" }]
   },
   heroGridLineA: {
@@ -1077,21 +1035,22 @@ const styles = StyleSheet.create({
   },
   heroPassTop: {
     flexDirection: "row",
-    gap: 10,
-    alignItems: "center"
+    gap: 12,
+    alignItems: "flex-start"
   },
   heroPassStamp: {
-    width: 104,
+    width: 112,
     alignItems: "center",
-    gap: 6
+    gap: 7,
+    marginTop: -2
   },
   heroAvatarFrame: {
-    width: 104,
-    height: 104,
-    borderRadius: 52,
+    width: 112,
+    height: 112,
+    borderRadius: 56,
     borderWidth: 1,
-    borderColor: "rgba(211,92,51,0.26)",
-    backgroundColor: "rgba(211,92,51,0.06)",
+    borderColor: "rgba(211,92,51,0.34)",
+    backgroundColor: "rgba(211,92,51,0.08)",
     justifyContent: "center",
     alignItems: "center",
     overflow: "hidden"
@@ -1105,7 +1064,7 @@ const styles = StyleSheet.create({
   },
   heroPassStampLabel: {
     color: "rgba(255,240,232,0.72)",
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: "800",
     letterSpacing: 0.7
   },
@@ -1120,26 +1079,27 @@ const styles = StyleSheet.create({
   },
   heroHeaderMain: {
     flex: 1,
-    gap: 6,
+    gap: 7,
     justifyContent: "center",
-    paddingVertical: 2
+    paddingTop: 2,
+    paddingBottom: 0
   },
   heroTagRow: {
     flexDirection: "row",
-    gap: 6,
+    gap: 8,
     flexWrap: "wrap"
   },
   heroTag: {
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(211,92,51,0.24)",
-    backgroundColor: "rgba(211,92,51,0.08)",
-    paddingHorizontal: 8,
-    paddingVertical: 4
+    borderColor: "rgba(211,92,51,0.44)",
+    backgroundColor: "rgba(211,92,51,0.10)",
+    paddingHorizontal: 10,
+    paddingVertical: 5
   },
   heroTagMuted: {
-    borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(255,255,255,0.03)"
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.02)"
   },
   heroTagText: {
     color: "#FFD6C7",
@@ -1154,16 +1114,16 @@ const styles = StyleSheet.create({
   },
   heroActionRow: {
     gap: 8,
-    marginTop: 2
+    marginTop: 4
   },
   heroPrimaryButton: {
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: "rgba(211,92,51,0.26)",
-    backgroundColor: "#C24A22",
+    borderColor: "rgba(211,92,51,0.34)",
+    backgroundColor: "#E45D2B",
     paddingHorizontal: 12,
-    paddingVertical: 9,
-    minHeight: 38,
+    paddingVertical: 11,
+    minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center"
@@ -1196,10 +1156,10 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(211,92,51,0.24)",
-    backgroundColor: "rgba(211,92,51,0.08)",
-    paddingHorizontal: 12,
-    paddingVertical: 10
+    borderColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(255,255,255,0.02)",
+    paddingHorizontal: 14,
+    paddingVertical: 12
   },
   photoEditCopy: {
     gap: 2
@@ -1214,27 +1174,27 @@ const styles = StyleSheet.create({
     fontSize: 12
   },
   photoEditAction: {
-    color: "#FFD4C4",
+    color: theme.colors.accent,
     fontSize: 13,
     fontWeight: "800"
   },
   heroTitle: {
     color: "#FFF8EE",
     ...theme.type.titleLg,
-    fontSize: 17
+    fontSize: 18
   },
   heroSubtitle: {
     color: "rgba(255,249,239,0.68)",
-    fontSize: 12,
+    fontSize: 13,
     lineHeight: 16
   },
   progressModule: {
-    borderRadius: 14,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.03)",
+    borderColor: "rgba(255,255,255,0.06)",
     backgroundColor: "rgba(255,255,255,0.02)",
-    padding: 12,
-    gap: 8
+    padding: 14,
+    gap: 10
   },
   progressHeaderRow: {
     gap: 8
@@ -1258,7 +1218,7 @@ const styles = StyleSheet.create({
     lineHeight: 17
   },
   progressTrack: {
-    height: 7,
+    height: 8,
     borderRadius: 999,
     backgroundColor: "rgba(255,255,255,0.05)",
     overflow: "hidden"
@@ -1274,41 +1234,58 @@ const styles = StyleSheet.create({
   readinessItem: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8
+    gap: 10
+  },
+  readinessIconWrap: {
+    width: 20,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  readinessIconWrapComplete: {
+    opacity: 1
+  },
+  readinessIconWrapIncomplete: {
+    opacity: 0.5
   },
   readinessIcon: {
-    fontSize: 12,
-    fontWeight: "800"
+    fontSize: 15,
+    fontWeight: "900"
   },
   readinessIconComplete: {
-    color: "#B9F0C8"
+    color: "#33D16F"
   },
   readinessIconIncomplete: {
-    color: "#FF9F9F"
+    color: "rgba(255,249,239,0.34)"
   },
   readinessLabel: {
-    color: "#FFF8EE",
     fontSize: 13,
     fontWeight: "600"
   },
+  readinessLabelComplete: {
+    color: "#FFF8EE"
+  },
+  readinessLabelIncomplete: {
+    color: "rgba(255,249,239,0.64)"
+  },
   heroMetricsRow: {
     flexDirection: "row",
-    gap: 10
+    gap: 10,
+    marginTop: 2
   },
   miniStat: {
     flex: 1,
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.03)",
-    backgroundColor: "#12100C",
-    paddingVertical: 11,
+    borderColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "#111112",
+    paddingVertical: 12,
     alignItems: "center",
     justifyContent: "center"
   },
   miniStatValue: {
     color: "#FFF8EE",
     fontWeight: "800",
-    fontSize: 14
+    fontSize: 15
   },
   miniStatLabel: {
     color: "rgba(255,249,239,0.55)",
@@ -1325,7 +1302,7 @@ const styles = StyleSheet.create({
     width: "48.5%",
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.04)",
+    borderColor: "rgba(255,255,255,0.06)",
     backgroundColor: "rgba(255,255,255,0.02)",
     padding: 11,
     gap: 5
@@ -1346,10 +1323,10 @@ const styles = StyleSheet.create({
   panel: {
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.035)",
-    backgroundColor: "#0F0D0A",
-    padding: 15,
-    gap: 15,
+    borderColor: "rgba(255,255,255,0.05)",
+    backgroundColor: "#0C0C0D",
+    padding: 14,
+    gap: 13,
     overflow: "hidden"
   },
   panelHeader: {
@@ -1362,8 +1339,8 @@ const styles = StyleSheet.create({
   },
   panelSubtitle: {
     color: "rgba(255,249,239,0.6)",
-    fontSize: 12,
-    lineHeight: 16
+    fontSize: 13,
+    lineHeight: 18
   },
   infoSectionLabel: {
     color: "#FFF8EE",
@@ -1379,213 +1356,96 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: 8
   },
-  crewSignalSpotlightGrid: {
-    gap: 10
-  },
-  crewSignalSpotlightCard: {
-    position: "relative",
-    borderRadius: 16,
-    borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    gap: 10,
-    overflow: "hidden"
-  },
-  crewSignalSpotlightCardSelected: {
-    borderColor: "rgba(211,92,51,0.44)",
-    backgroundColor: "rgba(211,92,51,0.14)"
-  },
-  crewSignalSpotlightOrb: {
-    position: "absolute",
-    width: 120,
-    height: 120,
-    borderRadius: 999,
-    right: -18,
-    top: -22
-  },
-  crewSignalSpotlightBeam: {
-    position: "absolute",
-    width: 180,
-    height: 30,
-    left: -30,
-    bottom: 14,
-    transform: [{ rotate: "-8deg" }]
-  },
-  crewSignalSpotlightTopRow: {
+  connectionHeaderRow: {
     flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: 10
+    justifyContent: "flex-end",
+    marginTop: -4
   },
-  crewSignalSpotlightTextWrap: {
-    flex: 1,
-    gap: 4
+  connectionHeaderCopy: {
+    flex: 1
   },
-  crewSignalSpotlightBadge: {
+  connectionEditButton: {
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: "rgba(255,249,239,0.08)",
-    backgroundColor: "rgba(255,249,239,0.04)",
-    paddingHorizontal: 8,
-    paddingVertical: 5
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.03)",
+    paddingHorizontal: 14,
+    paddingVertical: 7
   },
-  crewSignalSpotlightBadgeSelected: {
-    borderColor: "rgba(255,220,206,0.22)",
-    backgroundColor: "rgba(255,220,206,0.08)"
-  },
-  crewSignalSpotlightBadgeText: {
-    color: "rgba(255,249,239,0.54)",
-    fontSize: 10,
-    fontWeight: "800",
-    letterSpacing: 0.5
-  },
-  crewSignalSpotlightBadgeTextSelected: {
-    color: "#FFE4D9"
-  },
-  crewSignalSpotlightTitle: {
-    color: "#FFF8EE",
-    fontSize: 15,
+  connectionEditButtonText: {
+    color: theme.colors.accent,
+    fontSize: 13,
     fontWeight: "800"
   },
-  crewSignalSpotlightSubtitle: {
-    color: "rgba(255,249,239,0.58)",
-    fontSize: 12,
-    fontStyle: "italic"
-  },
-  crewSignalSpotlightFooter: {
+  connectionSummaryGrid: {
     flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
+    flexWrap: "wrap",
     gap: 10
   },
-  crewSignalIconPairWrap: {
+  connectionSummaryChip: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6
-  },
-  crewSignalIconPairPerson: {
-    alignItems: "center",
-    gap: 2
-  },
-  crewSignalIconPairPersonSelected: {},
-  crewSignalIconPairHead: {
-    width: 8,
-    height: 8,
+    gap: 10,
     borderRadius: 999,
-    backgroundColor: "rgba(255,249,239,0.46)"
+    borderWidth: 1,
+    borderColor: "rgba(211,92,51,0.24)",
+    backgroundColor: "rgba(255,255,255,0.02)",
+    paddingHorizontal: 18,
+    paddingVertical: 12
   },
-  crewSignalIconPairHeadSelected: {
-    backgroundColor: "#FFE3D7"
+  connectionSummaryEyebrow: {
+    color: theme.colors.accent,
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.6
   },
-  crewSignalIconPairBody: {
-    width: 12,
-    height: 6,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,249,239,0.28)"
+  connectionSummaryText: {
+    color: "#FFF8EE",
+    fontSize: 13,
+    fontWeight: "800"
   },
-  crewSignalIconPairBodySelected: {
-    backgroundColor: "rgba(255,227,215,0.82)"
+  connectionDivider: {
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.06)"
   },
-  crewSignalIconRadarWrap: {
-    width: 30,
-    height: 30,
-    alignItems: "center",
-    justifyContent: "center"
+  connectionSectionTitle: {
+    color: "#FFFDF8",
+    fontSize: 14,
+    fontWeight: "800"
   },
-  crewSignalIconRadarRingOuter: {
-    position: "absolute",
-    width: 28,
-    height: 28,
-    borderRadius: 999,
-    borderWidth: 1.5,
-    borderColor: "rgba(255,249,239,0.28)"
+  connectionChipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10
   },
-  crewSignalIconRadarRingOuterSelected: {
-    borderColor: "#FFE3D7"
-  },
-  crewSignalIconRadarRingInner: {
-    position: "absolute",
-    width: 16,
-    height: 16,
+  connectionChip: {
     borderRadius: 999,
     borderWidth: 1.5,
-    borderColor: "rgba(255,249,239,0.22)"
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.02)",
+    paddingHorizontal: 15,
+    paddingVertical: 10
   },
-  crewSignalIconRadarRingInnerSelected: {
-    borderColor: "rgba(255,227,215,0.84)"
+  connectionChipSelected: {
+    borderColor: "rgba(255,106,77,0.95)",
+    backgroundColor: "rgba(211,92,51,0.08)"
   },
-  crewSignalIconRadarCore: {
-    width: 5,
-    height: 5,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,249,239,0.50)"
+  connectionChipText: {
+    color: "#FFF8EE",
+    fontSize: 13,
+    fontWeight: "800"
   },
-  crewSignalIconRadarCoreSelected: {
-    backgroundColor: "#FFE3D7"
-  },
-  crewSignalIconRadarSweep: {
-    position: "absolute",
-    width: 12,
-    height: 2,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,249,239,0.34)",
-    transform: [{ rotate: "-28deg" }, { translateX: 5 }]
-  },
-  crewSignalIconRadarSweepSelected: {
-    backgroundColor: "#FFE3D7"
-  },
-  crewSignalIconRadarBlip: {
-    position: "absolute",
-    width: 4,
-    height: 4,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,249,239,0.38)",
-    right: 5,
-    top: 6
-  },
-  crewSignalIconRadarBlipSelected: {
-    backgroundColor: "#FFE3D7"
-  },
-  crewSignalIconChillWrap: {
-    width: 28,
-    height: 28,
-    alignItems: "center",
-    justifyContent: "center"
-  },
-  crewSignalIconMoon: {
-    width: 18,
-    height: 18,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,249,239,0.44)"
-  },
-  crewSignalIconMoonSelected: {
-    backgroundColor: "#FFE3D7"
-  },
-  crewSignalIconMoonCutout: {
-    position: "absolute",
-    width: 14,
-    height: 14,
-    borderRadius: 999,
-    backgroundColor: "#0F0D0A",
-    right: 4,
-    top: 5
-  },
-  crewSignalSpotlightAction: {
-    color: "rgba(255,249,239,0.54)",
-    fontSize: 11,
-    fontWeight: "700"
-  },
-  crewSignalSpotlightActionSelected: {
-    color: "#FFE1D5"
+  connectionChipTextSelected: {
+    color: "#FFF8EE"
   },
   ageRangeCard: {
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.04)",
-    backgroundColor: "#14110D",
-    paddingHorizontal: 14,
-    paddingVertical: 13,
-    gap: 12
+    borderColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(255,255,255,0.02)",
+    paddingHorizontal: 16,
+    paddingVertical: 15,
+    gap: 14
   },
   rangeHeader: {
     flexDirection: "row",
@@ -1602,18 +1462,18 @@ const styles = StyleSheet.create({
     gap: 8
   },
   agePrefLabel: {
-    color: "rgba(255,249,239,0.56)",
+    color: "rgba(255,249,239,0.62)",
     fontSize: 12,
     fontWeight: "600"
   },
   infoRowCard: {
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.04)",
-    backgroundColor: "#14110D",
-    paddingHorizontal: 14,
-    paddingVertical: 13,
-    gap: 5
+    borderColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(255,255,255,0.02)",
+    paddingHorizontal: 16,
+    paddingVertical: 15,
+    gap: 6
   },
   infoRowHeaderLine: {
     flexDirection: "row",
@@ -1622,7 +1482,7 @@ const styles = StyleSheet.create({
     gap: 8
   },
   infoRowLabel: {
-    color: "rgba(255,249,239,0.56)",
+    color: "rgba(255,249,239,0.60)",
     fontSize: 12,
     fontWeight: "600"
   },
@@ -1638,12 +1498,12 @@ const styles = StyleSheet.create({
     fontWeight: "700"
   },
   infoRowHelper: {
-    color: "rgba(255,249,239,0.48)",
+    color: "rgba(255,249,239,0.54)",
     fontSize: 11,
     lineHeight: 15
   },
   infoRowChevron: {
-    color: "rgba(255,249,239,0.42)",
+    color: "rgba(255,249,239,0.56)",
     fontSize: 22,
     lineHeight: 22,
     marginTop: -2
@@ -1658,7 +1518,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 22,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "#0F0D0A",
+    backgroundColor: theme.colors.canvas,
     paddingTop: 10,
     maxHeight: "68%"
   },
@@ -1781,10 +1641,10 @@ const styles = StyleSheet.create({
   bioBubbleCard: {
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: "rgba(211,92,51,0.1)",
-    backgroundColor: "#120E0A",
-    padding: 13,
-    gap: 9
+    borderColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(255,255,255,0.02)",
+    padding: 15,
+    gap: 10
   },
   bioBubbleHeader: {
     flexDirection: "row",
@@ -1798,7 +1658,7 @@ const styles = StyleSheet.create({
     fontWeight: "800"
   },
   bioBubbleMeta: {
-    color: "rgba(255,249,239,0.5)",
+    color: "rgba(255,249,239,0.58)",
     fontSize: 10,
     fontWeight: "700"
   },
@@ -1806,7 +1666,7 @@ const styles = StyleSheet.create({
     minHeight: 88,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.05)",
+    borderColor: "rgba(255,255,255,0.06)",
     backgroundColor: "rgba(255,255,255,0.02)",
     color: "#FFF8EE",
     paddingHorizontal: 12,
@@ -1960,9 +1820,9 @@ const styles = StyleSheet.create({
   toggleRow: {
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.04)",
-    backgroundColor: "#221D16",
-    padding: 13,
+    borderColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(255,255,255,0.02)",
+    padding: 15,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -1983,31 +1843,32 @@ const styles = StyleSheet.create({
     color: "rgba(255,249,239,0.78)"
   },
   toggleDescription: {
-    color: "rgba(255,249,239,0.6)",
-    fontSize: 12
+    color: "rgba(255,249,239,0.62)",
+    fontSize: 12,
+    lineHeight: 17
   },
   toggleDescriptionDisabled: {
-    color: "rgba(255,249,239,0.52)"
+    color: "rgba(255,249,239,0.50)"
   },
   toggleTrack: {
     width: 48,
     height: 28,
     borderRadius: 999,
-    backgroundColor: "#6F6457",
+    backgroundColor: "rgba(255,255,255,0.16)",
     padding: 3,
     justifyContent: "center"
   },
   toggleTrackOn: {
-    backgroundColor: "#C24A22"
+    backgroundColor: theme.colors.accent
   },
   toggleTrackDisabled: {
-    backgroundColor: "#53493D"
+    backgroundColor: "rgba(255,255,255,0.10)"
   },
   toggleThumb: {
     width: 22,
     height: 22,
     borderRadius: 999,
-    backgroundColor: "#FFF2E2"
+    backgroundColor: "#FFF8EE"
   },
   toggleThumbOn: {
     alignSelf: "flex-end"
@@ -2018,11 +1879,11 @@ const styles = StyleSheet.create({
     gap: 8
   },
   statusText: {
-    color: "rgba(255,249,239,0.66)"
+    color: "rgba(255,249,239,0.70)"
   },
   successText: {
-    color: "#B9F0C8",
-    fontWeight: "600"
+    color: "#D8F7E2",
+    fontWeight: "700"
   },
   errorText: {
     color: "#FF9F9F",
@@ -2060,6 +1921,19 @@ function formatAgeFromBirthdate(birthdate: string) {
 
 function formatPreferenceAge(value: number) {
   return value >= MAX_AGE ? `${MAX_AGE}+` : String(value);
+}
+
+function summaryEyebrowForVibe(value: string) {
+  const normalized = value.toLowerCase();
+  if (normalized.includes("after")) return "MOON";
+  if (normalized.includes("solo")) return "SOLO";
+  if (normalized.includes("open")) return "PEOPLE";
+  if (normalized.includes("small")) return "GROUP";
+  if (normalized.includes("chill")) return "CHILL";
+  if (normalized.includes("sober")) return "CLEAR";
+  if (normalized.includes("stick")) return "CREW";
+  if (normalized.includes("first")) return "NEW";
+  return "VIBE";
 }
 
 function parseCsvList(value: string) {

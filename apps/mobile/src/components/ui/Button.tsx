@@ -59,12 +59,12 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.accent
   },
   secondary: {
-    backgroundColor: theme.colors.surfaceMuted,
-    borderColor: theme.colors.border
+    backgroundColor: "rgba(255,255,255,0.02)",
+    borderColor: "rgba(255,255,255,0.06)"
   },
   ghost: {
     backgroundColor: "rgba(255,255,255,0.02)",
-    borderColor: theme.colors.border
+    borderColor: "rgba(255,255,255,0.06)"
   },
   pressed: {
     opacity: 0.9

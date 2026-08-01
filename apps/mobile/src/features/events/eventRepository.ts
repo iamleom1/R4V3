@@ -36,6 +36,7 @@ export type EventAttendeePreview = {
   city: string | null;
   vibeTags: string[];
   rsvpStatus: RSVPStatus;
+  lookingForCrew: boolean;
   profilePhotoUrl?: string | null;
 };
 
@@ -87,6 +88,8 @@ export type EventCrewMessage = {
 
 const localDemoRsvpsByProfile: Record<string, Record<string, RSVPStatus>> = {};
 const localDemoCrewVisibilityByProfile: Record<string, Record<string, boolean>> = {};
+const resolvedEventIdCache = new Map<string, string | null>();
+const eventSourceUrlCache = new Map<string, string | null>();
 
 const DEFAULT_DISCOVERY_EVENT_LIMIT = 60;
 const DISCOVERY_ALL_PAGE_SIZE = 200;
@@ -286,7 +289,8 @@ export async function upsertCrewVisibility(profileId: string, eventId: string, i
   if (!supabase) {
     return { ok: false as const, error: "Supabase is not configured." };
   }
-  if (!isUuidLike(eventId)) {
+  const resolvedEventId = await resolveSharedEventId(eventId);
+  if (!isUuidLike(resolvedEventId)) {
     localDemoCrewVisibilityByProfile[profileId] = {
       ...(localDemoCrewVisibilityByProfile[profileId] ?? {}),
       [eventId]: isLooking
@@ -299,7 +303,7 @@ export async function upsertCrewVisibility(profileId: string, eventId: string, i
     .upsert(
       {
         profile_id: profileId,
-        event_id: eventId,
+        event_id: resolvedEventId,
         status: "going" satisfies RSVPStatus,
         looking_for_crew: isLooking
       },
@@ -313,7 +317,7 @@ export async function upsertCrewVisibility(profileId: string, eventId: string, i
   }
 
   void trackEvent("crew_visibility_updated", {
-    event_id: eventId,
+    event_id: resolvedEventId,
     looking_for_crew: isLooking
   });
 
@@ -325,7 +329,8 @@ export async function upsertEventRsvp(profileId: string, eventId: string, status
   if (!supabase) {
     return { ok: false as const, error: "Supabase is not configured." };
   }
-  if (!isUuidLike(eventId)) {
+  const resolvedEventId = await resolveSharedEventId(eventId);
+  if (!isUuidLike(resolvedEventId)) {
     // External provider events can use non-UUID IDs (for example Ticketmaster IDs prefixed with `tm-`).
     // Persist locally so actions still drive cross-screen behavior (Events -> Crew).
     localDemoRsvpsByProfile[profileId] = {
@@ -346,7 +351,7 @@ export async function upsertEventRsvp(profileId: string, eventId: string, status
     .upsert(
       {
         profile_id: profileId,
-        event_id: eventId,
+        event_id: resolvedEventId,
         status
       },
       { onConflict: "event_id,profile_id" }
@@ -358,11 +363,11 @@ export async function upsertEventRsvp(profileId: string, eventId: string, status
     return { ok: false as const, error: toUserFacingError(error.message, "Couldn’t update your RSVP.") };
   }
   if (status !== "going") {
-    await rsvpTable.update({ looking_for_crew: false }).eq("profile_id", profileId).eq("event_id", eventId);
+    await rsvpTable.update({ looking_for_crew: false }).eq("profile_id", profileId).eq("event_id", resolvedEventId);
   }
 
   void trackEvent("event_rsvp_updated", {
-    event_id: eventId,
+    event_id: resolvedEventId,
     status
   });
 
@@ -374,16 +379,18 @@ export async function listEventAttendeePreview(eventId: string, limit = 8): Prom
   if (!supabase) {
     return [];
   }
-  if (!isUuidLike(eventId)) {
+  const resolvedEventId = await resolveSharedEventId(eventId);
+  if (!isUuidLike(resolvedEventId)) {
     return [];
   }
 
   const rsvpTable = supabase.from("event_rsvps") as any;
   const { data, error } = await rsvpTable
     .select(
-      "status, profile_id, profiles:profile_id ( id, display_name, city, vibe_tags )"
+      "status, looking_for_crew, profile_id, profiles:profile_id ( id, display_name, city, vibe_tags )"
     )
-    .eq("event_id", eventId)
+    .eq("event_id", resolvedEventId)
+    .eq("status", "going")
     .order("updated_at", { ascending: false })
     .limit(limit);
 
@@ -403,7 +410,8 @@ export async function listEventAttendeePreview(eventId: string, limit = 8): Prom
         displayName: (profile.display_name as string | null) ?? "R4V3 User",
         city: (profile.city as string | null) ?? null,
         vibeTags: Array.isArray(profile.vibe_tags) ? (profile.vibe_tags as string[]) : [],
-        rsvpStatus: row.status as RSVPStatus
+        rsvpStatus: row.status as RSVPStatus,
+        lookingForCrew: Boolean(row.looking_for_crew)
       } satisfies EventAttendeePreview;
     })
     .filter(Boolean) as EventAttendeePreview[];
@@ -425,7 +433,8 @@ export async function listEventCandidatePreview(
   if (!supabase) {
     return [];
   }
-  if (!isUuidLike(eventId)) {
+  const resolvedEventId = await resolveSharedEventId(eventId);
+  if (!isUuidLike(resolvedEventId)) {
     return [];
   }
 
@@ -486,17 +495,17 @@ export async function listEventCandidatePreview(
   };
 
   const { data: rpcData, error: rpcError } = await (supabase.rpc as any)("list_event_crew_candidates", {
-    p_event_id: eventId,
+    p_event_id: resolvedEventId,
     p_limit: limit * 2
   });
-  if (Array.isArray(rpcData) && !rpcError) {
+  if (Array.isArray(rpcData) && !rpcError && rpcData.length > 0) {
     return (await mapRows(rpcData)).slice(0, limit);
   }
 
   const rsvpTable = supabase.from("event_rsvps") as any;
   const { data, error } = await rsvpTable
     .select("profile_id, looking_for_crew, profiles:profile_id ( id, display_name, bio, birthdate, gender, city, vibe_tags, music_genres, height, education )")
-    .eq("event_id", eventId)
+    .eq("event_id", resolvedEventId)
     .eq("status", "going")
     .neq("profile_id", viewerProfileId)
     .limit(limit * 2);
@@ -748,7 +757,8 @@ export async function startEventCrewThreadSeed(profileId: string, eventId: strin
   if (!supabase) {
     return { ok: true as const, roomId: null as string | null, title: "Open crew" };
   }
-  if (!isUuidLike(eventId)) {
+  const resolvedEventId = await resolveSharedEventId(eventId);
+  if (!isUuidLike(resolvedEventId)) {
     return { ok: true as const, roomId: null as string | null, title: "Open crew" };
   }
 
@@ -756,7 +766,7 @@ export async function startEventCrewThreadSeed(profileId: string, eventId: strin
   const membersTable = supabase.from("event_room_members") as any;
   const { data: room, error: roomError } = await roomsTable
     .insert({
-      event_id: eventId,
+      event_id: resolvedEventId,
       created_by: profileId,
       title: "Open crew",
       size_cap: 6,
@@ -787,13 +797,14 @@ export async function startEventCrewThreadSeed(profileId: string, eventId: strin
 
 export async function listEventCrewRooms(eventId: string, viewerProfileId?: string | null): Promise<EventCrewRoom[]> {
   const supabase = getSupabaseClient();
-  if (!supabase || !isUuidLike(eventId)) {
+  const resolvedEventId = await resolveSharedEventId(eventId);
+  if (!supabase || !isUuidLike(resolvedEventId)) {
     return [];
   }
 
   const { data, error } = await ((supabase.from("event_rooms") as any)
     .select("id,event_id,title,meetup_note,size_cap,is_open,created_by,created_at,event_room_members(profile_id)")
-    .eq("event_id", eventId)
+    .eq("event_id", resolvedEventId)
     .order("created_at", { ascending: false }));
 
   if (error || !Array.isArray(data)) {
@@ -939,12 +950,13 @@ export async function createEventConnection(eventId: string, targetProfileId: st
   if (!supabase) {
     return { ok: false as const, error: "Supabase is not configured." };
   }
-  if (!isUuidLike(eventId) || !isUuidLike(targetProfileId)) {
+  const resolvedEventId = await resolveSharedEventId(eventId);
+  if (!isUuidLike(resolvedEventId) || !isUuidLike(targetProfileId)) {
     return { ok: true as const, matched: false, status: "pending" as const, threadId: null as string | null };
   }
 
   const { data, error } = await (supabase.rpc as any)("connect_for_event", {
-    p_event_id: eventId,
+    p_event_id: resolvedEventId,
     p_target_id: targetProfileId
   });
   if (error) {
@@ -960,7 +972,8 @@ export async function createEventConnection(eventId: string, targetProfileId: st
 }
 
 export async function hasEventCrewChat(profileId: string, eventId: string): Promise<boolean> {
-  if (!isUuidLike(eventId)) {
+  const resolvedEventId = await resolveSharedEventId(eventId);
+  if (!isUuidLike(resolvedEventId)) {
     return false;
   }
 
@@ -972,7 +985,7 @@ export async function hasEventCrewChat(profileId: string, eventId: string): Prom
   const matchesTable = supabase.from("matches") as any;
   const { data, error } = await matchesTable
     .select("id")
-    .eq("event_id", eventId)
+    .eq("event_id", resolvedEventId)
     .eq("mode", "community")
     .or(`profile_low_id.eq.${profileId},profile_high_id.eq.${profileId}`)
     .limit(1);
@@ -1027,6 +1040,178 @@ function isMissingDescriptionColumnError(error: unknown) {
 function isUuidLike(value: string | null | undefined) {
   if (!value) return false;
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+export async function resolveSharedEventId(eventId: string) {
+  if (isUuidLike(eventId)) {
+    return eventId;
+  }
+
+  if (resolvedEventIdCache.has(eventId)) {
+    return resolvedEventIdCache.get(eventId) ?? eventId;
+  }
+
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return eventId;
+  }
+
+  const providerRef = parseProviderEventReference(eventId);
+  if (!providerRef) {
+    resolvedEventIdCache.set(eventId, null);
+    return eventId;
+  }
+
+  const { data, error } = await (supabase.from("event_sources") as any)
+    .select("event_id")
+    .eq("provider", providerRef.provider)
+    .eq("provider_event_id", providerRef.providerEventId)
+    .maybeSingle();
+
+  if (error || !data?.event_id || !isUuidLike(data.event_id)) {
+    resolvedEventIdCache.set(eventId, null);
+    return eventId;
+  }
+
+  resolvedEventIdCache.set(eventId, data.event_id);
+  return data.event_id as string;
+}
+
+export async function getEventSourceUrl(event: Pick<EventRecord, "id" | "sourcePrimary">): Promise<string | null> {
+  const normalizedId = event.id.trim();
+  if (!normalizedId) {
+    return null;
+  }
+
+  if (eventSourceUrlCache.has(normalizedId)) {
+    return eventSourceUrlCache.get(normalizedId) ?? null;
+  }
+
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return null;
+  }
+
+  let query = (supabase.from("event_sources") as any).select("raw_payload").limit(1);
+  const providerRef = parseProviderEventReference(normalizedId);
+
+  if (providerRef) {
+    query = query.eq("provider", providerRef.provider).eq("provider_event_id", providerRef.providerEventId);
+  } else if (isUuidLike(normalizedId)) {
+    query = query.eq("event_id", normalizedId);
+  } else {
+    eventSourceUrlCache.set(normalizedId, null);
+    return null;
+  }
+
+  const { data, error } = await query.maybeSingle();
+  if (error || !data?.raw_payload) {
+    eventSourceUrlCache.set(normalizedId, null);
+    return null;
+  }
+
+  const resolved = extractSourceUrlFromPayload(data.raw_payload, event.sourcePrimary);
+  eventSourceUrlCache.set(normalizedId, resolved);
+  return resolved;
+}
+
+function parseProviderEventReference(eventId: string): { provider: "ticketmaster" | "posh" | "dice"; providerEventId: string } | null {
+  const normalized = eventId.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized.startsWith("tm-")) {
+    const providerEventId = normalized.slice(3);
+    return providerEventId ? { provider: "ticketmaster", providerEventId } : null;
+  }
+
+  if (normalized.startsWith("posh-")) {
+    const providerEventId = normalized.slice(5);
+    return providerEventId ? { provider: "posh", providerEventId } : null;
+  }
+
+  if (normalized.startsWith("dice-")) {
+    const providerEventId = normalized.slice(5);
+    return providerEventId ? { provider: "dice", providerEventId } : null;
+  }
+
+  return null;
+}
+
+function extractSourceUrlFromPayload(
+  rawPayload: unknown,
+  sourcePrimary: EventRecord["sourcePrimary"]
+): string | null {
+  if (!rawPayload || typeof rawPayload !== "object") {
+    return null;
+  }
+
+  const payload = rawPayload as Record<string, unknown>;
+  const directCandidates = [
+    payload.url,
+    payload.canonicalUrl,
+    payload.sourceUrl,
+    payload.permalink,
+    payload.shareUrl,
+    payload.share_url,
+    payload.eventUrl,
+    payload.event_url,
+    payload.webUrl,
+    payload.web_url,
+    payload.deeplink,
+    payload.deepLink,
+    payload.href
+  ];
+
+  for (const candidate of directCandidates) {
+    const normalized = normalizeHttpUrl(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  if (sourcePrimary === "dice") {
+    const diceContext = payload.__diceBrowseContext;
+    if (diceContext && typeof diceContext === "object") {
+      const normalized = normalizeHttpUrl((diceContext as Record<string, unknown>).sourceUrl);
+      if (normalized) {
+        return normalized;
+      }
+    }
+
+    const diceFallback = buildDiceEventUrlFromPayload(payload);
+    if (diceFallback) {
+      return diceFallback;
+    }
+  }
+
+  return null;
+}
+
+function buildDiceEventUrlFromPayload(payload: Record<string, unknown>) {
+  const permName = typeof payload.perm_name === "string" ? payload.perm_name.trim() : "";
+  if (permName) {
+    return `https://dice.fm/event/${permName}?lng=en-US`;
+  }
+
+  const slug = typeof payload.slug === "string" ? payload.slug.trim() : "";
+  if (slug) {
+    return `https://dice.fm/event/${slug}?lng=en-US`;
+  }
+
+  return null;
+}
+
+function normalizeHttpUrl(value: unknown) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  if (!/^https?:\/\//i.test(normalized)) {
+    return null;
+  }
+  return normalized;
 }
 
 function buildOverlapReason(vibeTags: string[], musicGenres: string[]) {
@@ -1356,11 +1541,28 @@ function isSupportedDiscoveryCity(city: string | null | undefined) {
     return false;
   }
   const normalized = normalizeDiscoveryCity(city);
-  return DEFAULT_SOCAL_TICKETMASTER_CITIES.some((candidate) => normalizeDiscoveryCity(candidate) === normalized);
+  return DEFAULT_SOCAL_TICKETMASTER_CITIES.some((candidate) => normalizeDiscoveryCity(candidate) === normalized)
+    || normalizeDiscoveryAlias(normalized) !== normalized;
 }
 
 function normalizeDiscoveryCity(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function normalizeDiscoveryAlias(city: string) {
+  const aliases: Record<string, string> = {
+    "east los angeles": "los angeles",
+    "los angeles county": "los angeles",
+    "north hollywood": "los angeles",
+    "west la": "los angeles",
+    "san bernardino county": "san bernardino",
+    "riverside county": "riverside"
+  };
+
+  const resolved = aliases[city] ?? city;
+  return DEFAULT_SOCAL_TICKETMASTER_CITIES.some((candidate) => normalizeDiscoveryCity(candidate) === resolved)
+    ? resolved
+    : city;
 }
 
 function dedupeTicketmasterEvents(events: TicketmasterEvent[]) {

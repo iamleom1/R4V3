@@ -12,7 +12,7 @@ import {
   View
 } from "react-native";
 import { theme } from "../../theme";
-import { listCuratedEvents, type CuratedEvent, upsertCuratedEvent } from "./eventCurationRepository";
+import { listCuratedEvents, setCuratedEventHiddenGlobally, type CuratedEvent } from "./eventCurationRepository";
 
 type VisibilityFilter = "all" | "visible" | "hidden";
 
@@ -67,28 +67,22 @@ export function EventCurationScreen() {
   }, [events, query, visibilityFilter]);
 
   async function updateEventVisibility(event: CuratedEvent, isHidden: boolean) {
-    setSavingEventIds((prev) => new Set(prev).add(event.eventId));
-
-    const result = await upsertCuratedEvent({
-      eventId: event.eventId,
-      title: event.title,
-      venueName: event.venueName,
-      city: event.city,
-      startsAt: event.startsAt,
-      endsAt: event.endsAt,
-      genreTags: event.genreTags,
-      sourcePrimary: event.sourcePrimary,
-      isFeatured: event.isFeatured,
-      promotionRank: event.promotionRank,
-      featuredUntil: event.featuredUntil,
-      curationNote: event.curationNote,
-      flyerUrl: event.flyerUrl,
-      isHidden
+    const matchingEvents = events.filter((candidate) => areLikelyDuplicateEvents(candidate, event));
+    setSavingEventIds((prev) => {
+      const next = new Set(prev);
+      for (const candidate of matchingEvents) {
+        next.add(candidate.eventId);
+      }
+      return next;
     });
+
+    const result = await setCuratedEventHiddenGlobally(event.eventId, isHidden);
 
     setSavingEventIds((prev) => {
       const next = new Set(prev);
-      next.delete(event.eventId);
+      for (const candidate of matchingEvents) {
+        next.delete(candidate.eventId);
+      }
       return next;
     });
 
@@ -97,7 +91,8 @@ export function EventCurationScreen() {
       return;
     }
 
-    setEvents((prev) => prev.map((item) => (item.eventId === event.eventId ? { ...item, isHidden } : item)));
+    const matchingEventIds = new Set(result.updatedEventIds.length > 0 ? result.updatedEventIds : matchingEvents.map((candidate) => candidate.eventId));
+    setEvents((prev) => prev.map((item) => (matchingEventIds.has(item.eventId) ? { ...item, isHidden } : item)));
   }
 
   return (
@@ -198,6 +193,28 @@ function formatTimestamp(value: string) {
     hour: "numeric",
     minute: "2-digit"
   }).format(date);
+}
+
+function areLikelyDuplicateEvents(left: CuratedEvent, right: CuratedEvent) {
+  return normalizeEventKey(left.title) === normalizeEventKey(right.title)
+    && normalizeEventKey(left.city ?? "") === normalizeEventKey(right.city ?? "")
+    && getCalendarDayKey(left.startsAt) === getCalendarDayKey(right.startsAt);
+}
+
+function normalizeEventKey(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[’']/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getCalendarDayKey(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toISOString().slice(0, 10);
 }
 
 const styles = StyleSheet.create({

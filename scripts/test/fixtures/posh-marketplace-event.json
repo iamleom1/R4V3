@@ -1,14 +1,14 @@
 {
   "_id": "posh_evt_123",
-  "name": "Sunset House Session",
-  "startUtc": "2026-04-19T02:00:00.000Z",
-  "endUtc": "2026-04-19T07:00:00.000Z",
+  "name": "Sunset EDM House Techno Rave",
+  "startUtc": "2026-08-19T02:00:00.000Z",
+  "endUtc": "2026-08-19T07:00:00.000Z",
   "url": "sunset-house-session",
-  "shortDescription": "A deep house and techno night by the coast.",
-  "groupName": "Brownies & Lemonade",
+  "shortDescription": "EDM house techno warehouse rave with a DJ set and all night energy.",
+  "groupName": "Brownies & Lemonade x Framework",
   "flyer": "https://cdn.example.com/posh-flyer.jpg",
   "venue": {
-    "name": "Costa Mesa Warehouse",
-    "address": "123 Main St, Costa Mesa, CA 92626"
+    "name": "Ontario Warehouse",
+    "address": "123 Main St, Ontario, CA 91764"
   }
 }

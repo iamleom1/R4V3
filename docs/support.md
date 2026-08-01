@@ -1,17 +1,21 @@
 # R4V3 Support
 
-Last updated: April 23, 2026
+Last updated: June 10, 2026
 
 ## Contact
 
-For closed beta support, contact the R4V3 team through the TestFlight feedback channel or the support email listed in App Store Connect.
+For app support, contact:
+
+- support email: `support@YOUR_DOMAIN`
+- support page: `https://YOUR_DOMAIN/support`
 
 ## What to include
 
 - Account email used in the beta.
+- Account email used in the app.
 - Device model and iOS version.
 - A short description of what happened.
-- The screen or tester-script step where the issue occurred.
+- The screen or flow where the issue occurred.
 - A screenshot or screen recording when possible.
 
 ## Account deletion

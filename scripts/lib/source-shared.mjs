@@ -141,8 +141,8 @@ const DEFAULT_DICE_REGIONS = [
     city: "Orange County",
     region: "CA",
     country: "US",
-    cityNames: ["Santa Ana", "Anaheim", "Costa Mesa", "Irvine", "Huntington Beach", "Newport Beach", "Orange", "Fullerton"],
-    citySlugTerms: ["santa-ana", "anaheim", "costa-mesa", "irvine", "huntington-beach", "newport-beach", "orange-county", "orange", "fullerton"]
+    cityNames: ["Anaheim", "Santa Ana", "Costa Mesa", "Irvine", "Huntington Beach", "Newport Beach", "Orange", "Fullerton"],
+    citySlugTerms: ["anaheim", "santa-ana", "costa-mesa", "irvine", "huntington-beach", "newport-beach", "orange", "fullerton"]
   },
   {
     mode: "sitemap",
@@ -233,19 +233,69 @@ export function normalizeIsoDate(value) {
 }
 
 export function extractCityFromAddress(address) {
-  if (!address) {
+  const raw = stringOrNull(address);
+  if (!raw) {
     return null;
   }
 
-  const parts = address.split(",").map((part) => part.trim()).filter(Boolean);
-  if (parts.length >= 2) {
-    return parts[parts.length - 2] || null;
+  const normalized = raw.replace(/\s+/g, " ").trim();
+  const streetLineMatch = normalized.match(
+    /(?:^|\s)\d+.*\b(?:st|street|ave|avenue|blvd|boulevard|rd|road|dr|drive|ln|lane|way|pl|place|ct|court|pkwy|parkway)\b\s+([A-Za-z][A-Za-z .'-]*?)\s+[A-Z]{2}(?:\s+\d{5}(?:-\d{4})?)?(?:,\s*[A-Z]{2})?$/i
+  );
+  if (streetLineMatch?.[1]) {
+    const candidate = streetLineMatch[1].trim();
+    if (isLikelyCityName(candidate)) {
+      return candidate;
+    }
   }
-  return parts.at(-1) ?? null;
+
+  const stateZipMatch = normalized.match(/([A-Za-z][A-Za-z .'-]*?)\s*,?\s+[A-Z]{2}(?:\s+\d{5}(?:-\d{4})?)?(?:,\s*[A-Z]{2})?$/);
+  if (stateZipMatch?.[1]) {
+    const candidate = stateZipMatch[1].split(",").map((part) => part.trim()).filter(Boolean).at(-1);
+    if (candidate && isLikelyCityName(candidate)) {
+      return candidate;
+    }
+  }
+
+  const parts = normalized.split(",").map((part) => part.trim()).filter(Boolean);
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const candidate = parts[index];
+    if (isLikelyCityName(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 export function stringOrNull(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function isLikelyCityName(value) {
+  const candidate = stringOrNull(value);
+  if (!candidate) {
+    return false;
+  }
+
+  if (/\d/.test(candidate)) {
+    return false;
+  }
+
+  const normalized = candidate.toUpperCase();
+  if (/^[A-Z]{2}$/.test(normalized)) {
+    return false;
+  }
+
+  if (normalized === "USA" || normalized === "US") {
+    return false;
+  }
+
+  if (/\b(?:SUITE|STE|FLOOR|FL|UNIT|BLDG|BUILDING)\b/i.test(candidate)) {
+    return false;
+  }
+
+  return true;
 }
 
 export function parseCsv(value) {
