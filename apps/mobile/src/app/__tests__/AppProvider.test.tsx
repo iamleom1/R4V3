@@ -1,8 +1,8 @@
 import React, { useEffect, useRef } from "react";
-import { render, waitFor } from "@testing-library/react-native";
+import { act, render, waitFor } from "@testing-library/react-native";
 
-import { AppProvider, useAppState } from "../AppProvider";
-import { deleteMyAccountFromSupabase } from "../../features/profile/profileRepository";
+import { AppProvider, useAppState, type AppStateValue } from "../AppProvider";
+import { deleteMyAccountFromSupabase, loadProfileDraftFromSupabase, upsertProfileDraftToSupabase } from "../../features/profile/profileRepository";
 
 const mockGetSupabaseClient = jest.fn();
 const mockTrackEvent = jest.fn();
@@ -123,6 +123,44 @@ describe("AppProvider", () => {
     mockGetSupabaseClient.mockReturnValue(null);
     mockRegisterDevicePushToken.mockResolvedValue({ ok: true });
     mockUnregisterDevicePushToken.mockResolvedValue(undefined);
+  });
+
+  it.each(["TOKEN_REFRESHED", "SIGNED_IN", "USER_UPDATED"])("keeps autosaving after same-user %s", async (event) => {
+    let currentState: AppStateValue;
+    let onAuthChange: (event: string, session: any) => void;
+    const session = { user: { id: "user-123", email: "leo@example.com" } };
+    mockGetSupabaseClient.mockReturnValue({
+      auth: {
+        getSession: async () => ({ data: { session } }),
+        onAuthStateChange: (callback: typeof onAuthChange) => {
+          onAuthChange = callback;
+          return { data: { subscription: { unsubscribe: jest.fn() } } };
+        }
+      }
+    });
+    function AutosaveHarness() {
+      currentState = useAppState();
+      return null;
+    }
+    render(<AppProvider><AutosaveHarness /></AppProvider>);
+    await waitFor(() => {
+      expect(currentState.session?.user.id).toBe("user-123");
+      expect(currentState.profileHydrationComplete).toBe(true);
+    });
+
+    await act(async () => onAuthChange(event, { ...session, access_token: "refreshed" }));
+    expect(currentState!.profileHydrationComplete).toBe(true);
+    act(() => currentState.updateProfileDraft({ bio: "Edited after refresh" }));
+    await waitFor(() => {
+      expect(upsertProfileDraftToSupabase).toHaveBeenCalledWith("user-123", expect.objectContaining({ bio: "Edited after refresh" }));
+    });
+    expect(loadProfileDraftFromSupabase).toHaveBeenCalledTimes(1);
+
+    await act(async () => onAuthChange("SIGNED_IN", { user: { id: "user-456", email: "next@example.com" } }));
+    await waitFor(() => {
+      expect(loadProfileDraftFromSupabase).toHaveBeenLastCalledWith("user-456");
+      expect(currentState.profileHydrationComplete).toBe(true);
+    });
   });
 
   it("completes onboarding and emits analytics when the profile is valid", async () => {

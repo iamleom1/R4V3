@@ -126,7 +126,6 @@ export function EventDiscoveryScreen({ navigation }: Props) {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCalendarDate, setSelectedCalendarDate] = useState<DiscoverDateFilter>(null);
   const [showCalendarPicker, setShowCalendarPicker] = useState(false);
-  const [showSearchInput, setShowSearchInput] = useState(false);
   const [isSortDropdownOpen, setIsSortDropdownOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isLocating, setIsLocating] = useState(false);
@@ -383,6 +382,21 @@ export function EventDiscoveryScreen({ navigation }: Props) {
       loadFullRange: Boolean(selectedCalendarDate)
     });
   }, [loadEventDiscovery, selectedCalendarDate]);
+
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      loadedEventCountRef.current = 0;
+      hasMoreEventsRef.current = true;
+      hasStartedDiscoveryScrollRef.current = false;
+      void loadEventDiscovery({ reset: true, loadFullRange: true });
+    }, 300);
+
+    return () => clearTimeout(timeout);
+  }, [loadEventDiscovery, searchQuery]);
 
   useEffect(() => {
     return () => {
@@ -821,7 +835,14 @@ export function EventDiscoveryScreen({ navigation }: Props) {
   return (
     <View style={styles.screenRoot}>
       <ScrollView
-        contentContainerStyle={[styles.container, { paddingTop: Math.max(insets.top + 8, 22) }]}
+        contentContainerStyle={[
+          styles.container,
+          {
+            paddingTop: Math.max(insets.top + 8, 22),
+            paddingBottom: Math.max(insets.bottom + 84, 104)
+          }
+        ]}
+        scrollIndicatorInsets={{ bottom: Math.max(insets.bottom + 84, 104) }}
         onScrollBeginDrag={() => {
           hasStartedDiscoveryScrollRef.current = true;
           pauseWeekendAutoRotate();
@@ -903,6 +924,19 @@ export function EventDiscoveryScreen({ navigation }: Props) {
                   }
                 >
                   {event.flyerUrl ? <View style={styles.weekendFlyerOverlay} /> : null}
+                  {event.flyerUrl ? (
+                    <LinearGradient
+                      colors={[
+                        "rgba(0,0,0,0.10)",
+                        "rgba(0,0,0,0.18)",
+                        "rgba(0,0,0,0.36)",
+                        "rgba(0,0,0,0.58)",
+                        "rgba(0,0,0,0.76)"
+                      ]}
+                      locations={[0, 0.18, 0.46, 0.72, 1]}
+                      style={styles.weekendFlyerGradient}
+                    />
+                  ) : null}
                 </FlyerSurface>
                 <Text style={styles.weekendDay}>{formatWeekendDay(event.startsAt)}</Text>
                 <Text style={styles.weekendTitle} numberOfLines={2}>{event.title}</Text>
@@ -998,15 +1032,22 @@ export function EventDiscoveryScreen({ navigation }: Props) {
                 {activeLocationTitle}
               </Text>
             </Pressable>
-            <Pressable
-              style={[styles.searchTrigger, showSearchInput && styles.searchTriggerActive]}
-              accessibilityRole="button"
-              accessibilityLabel="Search events by name"
-              onPress={() => setShowSearchInput((current) => !current)}
-            >
-              <Text style={styles.searchTriggerText}>🔎</Text>
-            </Pressable>
           </View>
+        </View>
+        <View style={styles.discoverySearchRow}>
+          <Text style={styles.discoverySearchGlyph}>⌕</Text>
+          <TextInput
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            style={styles.discoverySearchInput}
+            placeholder="Search events, artists, venues..."
+            placeholderTextColor="rgba(255,248,238,0.34)"
+          />
+          {searchQuery.trim() ? (
+            <Pressable style={styles.discoverySearchClear} onPress={() => setSearchQuery("")}>
+              <Text style={styles.discoverySearchClearText}>Clear</Text>
+            </Pressable>
+          ) : null}
         </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.genreRail}>
           <Pressable
@@ -1028,22 +1069,6 @@ export function EventDiscoveryScreen({ navigation }: Props) {
             );
           })}
         </ScrollView>
-        {showSearchInput ? (
-          <View style={styles.discoverySearchRow}>
-            <TextInput
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              style={styles.discoverySearchInput}
-              placeholder="Search events by name or venue"
-              placeholderTextColor={theme.colors.textSecondary}
-            />
-            {searchQuery.trim() ? (
-              <Pressable style={styles.discoverySearchClear} onPress={() => setSearchQuery("")}>
-                <Text style={styles.discoverySearchClearText}>Clear</Text>
-              </Pressable>
-            ) : null}
-          </View>
-        ) : null}
       </View>
 
       <View style={styles.sectionHeaderRow}>
@@ -2358,9 +2383,9 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.canvas
   },
   container: {
+    flexGrow: 1,
     padding: 16,
     gap: 14,
-    paddingBottom: 28,
     backgroundColor: theme.colors.canvas
   },
   pageHeader: {
@@ -2693,7 +2718,10 @@ const styles = StyleSheet.create({
   },
   weekendFlyerOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(7,7,10,0.38)"
+    backgroundColor: "rgba(7,7,10,0.22)"
+  },
+  weekendFlyerGradient: {
+    ...StyleSheet.absoluteFillObject
   },
   weekendGlowA: {
     position: "absolute",
@@ -2947,30 +2975,39 @@ const styles = StyleSheet.create({
   discoverySearchRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8
+    gap: 10,
+    minHeight: 46,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+    backgroundColor: "#090A0D",
+    paddingLeft: 14,
+    paddingRight: 10
+  },
+  discoverySearchGlyph: {
+    color: "rgba(255,248,238,0.72)",
+    fontSize: 26,
+    lineHeight: 26,
+    fontWeight: "500"
   },
   discoverySearchInput: {
     flex: 1,
-    minHeight: 42,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "#17191F",
+    minHeight: 44,
     color: "#FFF8EE",
-    paddingHorizontal: 12,
-    paddingVertical: 10
+    paddingHorizontal: 0,
+    paddingVertical: 10,
+    fontSize: 15,
+    fontWeight: "500"
   },
   discoverySearchClear: {
     borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-    backgroundColor: "#17191F",
-    paddingHorizontal: 12,
-    paddingVertical: 9
+    backgroundColor: "rgba(255,255,255,0.06)",
+    paddingHorizontal: 10,
+    paddingVertical: 7
   },
   discoverySearchClearText: {
     color: "rgba(255,248,238,0.82)",
-    ...theme.type.caption,
+    fontSize: 11,
     fontWeight: "700"
   },
   upcomingHeaderActions: {
@@ -3103,24 +3140,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#17191F",
     paddingHorizontal: 10,
     paddingVertical: 7
-  },
-  searchTrigger: {
-    minWidth: 40,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-    backgroundColor: "#17191F",
-    paddingHorizontal: 10,
-    paddingVertical: 7
-  },
-  searchTriggerActive: {
-    borderColor: "rgba(230,104,56,0.48)",
-    backgroundColor: "rgba(230,104,56,0.14)"
-  },
-  searchTriggerText: {
-    fontSize: 14
   },
   locationTriggerGlyphText: {
     color: "rgba(255,232,182,0.92)",

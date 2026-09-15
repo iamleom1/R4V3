@@ -39,6 +39,77 @@ export DICE_REGIONS_JSON='[{"name":"Los Angeles County","city":"Los Angeles","br
 export DRY_RUN="false"
 ```
 
+## Promoters managed in Supabase
+
+Migrations `0049_promoter_sources.sql` and `0050_dice_promoter_sources.sql` create
+the registry and enable POSH and DICE sources. The first migration seeds TECHTONIK
+as approved and enabled. Adding promoters requires no app release or code change.
+
+### Add or approve a promoter
+
+In Supabase's Table Editor, open `public.promoter_sources` and insert a row:
+
+| Field | Value |
+| --- | --- |
+| `name` | Promoter display name |
+| `provider` | `posh` or `dice` |
+| `organizer_slug` | The part after `/g/` on POSH or `/promoters/` on DICE |
+| `default_city` | Their usual city, used when an event's location is undisclosed |
+| `default_region` / `default_country` | Defaults to `CA` / `US`; change for other locations |
+| `status` | `pending` until reviewed, then `approved` or `rejected` |
+| `enabled` | Set to `true` only after approval |
+
+For example, `https://dice.fm/promoters/framework-y7q2` uses provider `dice` and
+slug `framework-y7q2`. `organizer_url` is generated automatically. Slugs must be lowercase letters,
+numbers, or hyphens. Duplicate organizer entries and enabling unapproved entries
+are rejected by the database. Review the organizer's identity and EDM relevance
+before approval: approved organizer events do not require EDM title keywords.
+
+Incoming requests can be recorded as pending rows by an admin. This initial
+workflow uses the Supabase dashboard; a public self-service submission form is
+not included. App clients and anonymous visitors cannot read or edit this table.
+Dashboard administrators and the backend service role manage it.
+
+The existing 12-hour ingest reads approved, enabled sources on every run. Both
+adapters verify that the returned organizer slug matches the configured slug and
+only import future, non-cancelled listings. POSH also excludes password-protected
+events and listings not marked for third-party display. Organizer results take
+precedence over regional results with the same provider event ID.
+
+Set `enabled = false` to stop direct fetching. Disable before marking a source
+rejected. This does not delete existing events or prevent regional marketplace
+discovery. Cancellation/removal reconciliation is not part of this change; use
+existing event moderation to hide previously imported listings when needed.
+
+### Verify a promoter
+
+With the existing Supabase credentials configured, run a read-only preview:
+
+```bash
+DRY_RUN=true PROMOTERS_ONLY=true EDM_SCRAPER_SOURCES=posh,dice pnpm ingest:edm
+```
+
+This reads the database but writes neither events nor fetch telemetry. A dry run
+without credentials can still preview regional discovery; it explicitly skips
+database promoters. Promoter-only previews require credentials.
+
+After a normal run, check `last_fetched_at`, `last_fetch_status`, `last_event_count`,
+and `last_error`. These describe fetching, not successful event persistence; check
+the overall ingest job for persistence failures. A valid empty organizer response
+records success with zero events. A broken response records failure, other sources
+continue, and the job exits unsuccessfully after saving successfully fetched events.
+Missing/unreadable source configuration fails the job rather than silently using
+an obsolete local list.
+
+Validation: `pnpm test:edm` covers the adapter and database loader. SQL permissions
+and constraints are checked in `supabase/tests/promoter-sources.test.mjs`, using
+the same isolated PGlite runtime pattern as the curation SQL tests:
+
+```bash
+npm install --prefix /private/tmp/r4v3-promoter-sql-review --no-package-lock --ignore-scripts @electric-sql/pglite@0.5.8
+R4V3_PGLITE_MODULE=/private/tmp/r4v3-promoter-sql-review/node_modules/@electric-sql/pglite node --test supabase/tests/promoter-sources.test.mjs
+```
+
 ## Run
 
 ```bash

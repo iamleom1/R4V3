@@ -135,23 +135,30 @@ export function AppProvider({ children }: PropsWithChildren) {
     }
 
     let mounted = true;
+    let currentProfileId: string | null = null;
+
+    function applySession(nextSession: Session | null) {
+      const nextProfileId = nextSession?.user?.id ?? null;
+      if (nextProfileId !== currentProfileId) {
+        setProfileHydrationComplete(!nextProfileId);
+        currentProfileId = nextProfileId;
+      }
+      setSession(nextSession);
+      setAuthStatus(nextSession ? "authenticated" : "signed_out");
+    }
 
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) {
         return;
       }
-      setSession(data.session);
-      setProfileHydrationComplete(!data.session);
-      setAuthStatus(data.session ? "authenticated" : "signed_out");
+      applySession(data.session);
       if (data.session) {
         void trackEvent("auth_session_restored", { source: "app_boot" });
       }
     });
 
     const { data: sub } = supabase.auth.onAuthStateChange((event, nextSession) => {
-      setSession(nextSession);
-      setProfileHydrationComplete(!nextSession);
-      setAuthStatus(nextSession ? "authenticated" : "signed_out");
+      applySession(nextSession);
       if (nextSession) {
         void trackEvent("auth_authenticated", { source: "auth_state_change" });
       }

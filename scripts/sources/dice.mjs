@@ -116,6 +116,86 @@ export async function scrapeDiceRegions({ regions, fetchText }) {
   return events;
 }
 
+export async function scrapeDicePromoters({ promoters, fetchText, now = Date.now() }) {
+  const events = [];
+  const results = [];
+
+  for (const promoter of promoters) {
+    try {
+      const slug = promoter.organizer_slug;
+      if (!/^[a-z0-9-]{1,100}$/.test(slug ?? "")) {
+        throw new Error("Invalid DICE promoter slug");
+      }
+
+      console.log(`[dice] loading promoter ${slug}`);
+      const sourceUrl = `${DICE_BASE_URL}/promoters/${slug}?lng=en-US`;
+      const html = await fetchText(sourceUrl);
+      const profile = extractDicePromoterProfile(html);
+
+      if (profile?.promoter?.slug !== slug || !stringOrNull(profile?.promoter?.id) || !Array.isArray(profile?.sections)) {
+        throw new Error("Invalid DICE promoter response or promoter identity mismatch");
+      }
+
+      const rawEvents = collectDicePromoterEvents(profile);
+      const mapped = [];
+      for (const rawEvent of rawEvents) {
+        const startsAt = stringOrNull(rawEvent?.dates?.event_start_date);
+        const endsAt = stringOrNull(rawEvent?.dates?.event_end_date);
+        if (!stringOrNull(rawEvent?.id) || !startsAt || !endsAt) {
+          throw new Error("DICE promoter event missing ID or valid dates");
+        }
+        if (!Number.isFinite(Date.parse(startsAt)) || !Number.isFinite(Date.parse(endsAt))) {
+          throw new Error("DICE promoter event missing ID or valid dates");
+        }
+        if (Date.parse(endsAt) <= now || String(rawEvent?.status ?? "").toLowerCase() === "cancelled") {
+          continue;
+        }
+
+        const eventUrl = `${DICE_BASE_URL}/event/${rawEvent.id}`;
+        const event = mapDiceEvent(
+          { ...rawEvent, presented_by: profile.promoter.name },
+          { city: promoter.default_city, region: promoter.default_region, country: promoter.default_country },
+          { sourceUrl: eventUrl, trustedPromoter: true }
+        );
+        if (!event) {
+          throw new Error("DICE promoter event could not be normalized");
+        }
+        event.rawPayload.promoterSourceId = promoter.id;
+        event.rawPayload.organizerUrl = `${DICE_BASE_URL}/promoters/${slug}`;
+        mapped.push(event);
+      }
+
+      events.push(...mapped);
+      results.push({ sourceId: promoter.id, slug, provider: "dice", status: "success", eventCount: mapped.length });
+    } catch (error) {
+      results.push({ sourceId: promoter.id, slug: promoter.organizer_slug, provider: "dice", status: "failure", error: error.message });
+    }
+  }
+
+  return { events, results };
+}
+
+export function extractDicePromoterProfile(html) {
+  if (!html) return null;
+  return extractNextDataJson(html)?.props?.pageProps?.profile ?? null;
+}
+
+function collectDicePromoterEvents(profile) {
+  const unique = new Map();
+  for (const section of profile.sections ?? []) {
+    const candidates = Array.isArray(section?.events)
+      ? section.events
+      : Array.isArray(section?.items)
+        ? section.items.map((item) => item?.event).filter(Boolean)
+        : [];
+    for (const event of candidates) {
+      const id = stringOrNull(event?.id);
+      if (id && !unique.has(id)) unique.set(id, event);
+    }
+  }
+  return Array.from(unique.values());
+}
+
 export function mapDiceEvent(rawEvent, region, context = {}) {
   if (!rawEvent || typeof rawEvent !== "object") {
     return null;
@@ -131,7 +211,7 @@ export function mapDiceEvent(rawEvent, region, context = {}) {
 
   const venue = rawEvent?.venues?.[0];
   const venueAddress = stringOrNull(venue?.address);
-  const city = extractCityFromAddress(venueAddress) ?? stringOrNull(venue?.city?.name) ?? region.city;
+  const city = stringOrNull(venue?.city?.name) ?? extractCityFromAddress(venueAddress) ?? region.city;
   const browseHints = Array.isArray(context?.browseHints) ? context.browseHints.filter(Boolean) : [];
   const text = [
     title,
@@ -144,7 +224,7 @@ export function mapDiceEvent(rawEvent, region, context = {}) {
     .filter(Boolean)
     .join(" ");
 
-  if (!isLikelyEdmEvent(text)) {
+  if (!context?.trustedPromoter && !isLikelyEdmEvent(text)) {
     return null;
   }
 

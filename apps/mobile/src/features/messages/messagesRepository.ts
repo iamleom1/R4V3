@@ -1,3 +1,4 @@
+import { MESSAGE_PAGE_SIZE, type HistoryCursor } from "./useMessageHistory";
 import { getSupabaseClient } from "../../lib/supabase";
 import { trackEvent } from "../../lib/telemetry";
 import { toUserFacingError } from "../../lib/userFacingErrors";
@@ -298,24 +299,28 @@ async function listConversationsLegacy(viewerProfileId: string, blockedProfileId
   }));
 }
 
-export async function listMessages(matchId: string, _viewerProfileId: string): Promise<MessageItem[]> {
+export async function listMessages(matchId: string, _viewerProfileId: string, before?: HistoryCursor): Promise<MessageItem[]> {
   const supabase = getSupabaseClient();
   if (!supabase) {
     throw new Error("Supabase is not configured.");
   }
 
   const messagesTable = supabase.from("messages") as any;
-  const { data, error } = await messagesTable
+  let query = messagesTable
     .select("id,match_id,sender_profile_id,body,created_at")
     .eq("match_id", matchId)
     .is("deleted_at", null)
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(MESSAGE_PAGE_SIZE);
+  if (before) query = query.or(`created_at.lt.${before.createdAt},and(created_at.eq.${before.createdAt},id.lt.${before.id})`);
+  const { data, error } = await query;
 
   if (error || !Array.isArray(data)) {
     throw new Error(error?.message ?? "Failed to load messages.");
   }
 
-  return data.map((row: any) => ({
+  return data.reverse().map((row: any) => ({
     id: row.id,
     matchId: row.match_id,
     senderProfileId: row.sender_profile_id,

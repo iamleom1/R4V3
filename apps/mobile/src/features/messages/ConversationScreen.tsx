@@ -1,3 +1,4 @@
+import { useMessageHistory } from "./useMessageHistory";
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
 import {
@@ -73,14 +74,16 @@ export function ConversationScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();
   const tabBarHeight = useBottomTabBarHeight();
   const { session } = useAppState();
-  const [messages, setMessages] = useState<MessageItem[]>([]);
+  const history = useMessageHistory<MessageItem>(`${session?.user?.id ?? "demo"}:${route.params.matchId}`, async (before) => {
+    if (!session?.user?.id) return demoByMatchId[route.params.matchId] ?? [];
+    return listMessages(route.params.matchId, session.user.id, before);
+  });
+  const { messages, isLoading, isRefreshing } = history;
   const [draft, setDraft] = useState("");
-  const [isLoading, setIsLoading] = useState(true);
   const [isSending, setIsSending] = useState(false);
   const [isCreatingCrew, setIsCreatingCrew] = useState(false);
   const [isBlocked, setIsBlocked] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isRefreshing, setIsRefreshing] = useState(false);
   const [arePromptsHidden, setArePromptsHidden] = useState(true);
   const threadScrollRef = useRef<ScrollView | null>(null);
 
@@ -89,10 +92,15 @@ export function ConversationScreen({ navigation, route }: Props) {
     const safeAreaBottom = Math.max(insets.bottom, 8);
     return safeAreaBottom + tabBarHeight + 12;
   }, [insets.bottom, tabBarHeight]);
-  const visibleMessages = useMemo(
-    () => (hasRealSession ? messages : demoByMatchId[route.params.matchId] ?? []),
-    [hasRealSession, messages, route.params.matchId]
-  );
+  const visibleMessages = messages;
+  const realtimeConnected = useRef(false);
+  const previousLatestId = useRef<string | undefined>(undefined);
+  const latestMessageId = messages[messages.length - 1]?.id;
+  useEffect(() => {
+    if (latestMessageId && session?.user?.id) {
+      void markConversationRead(route.params.matchId, session.user.id);
+    }
+  }, [latestMessageId, route.params.matchId, session?.user?.id]);
 
   function scrollToLatest(animated = true) {
     requestAnimationFrame(() => {
@@ -101,63 +109,22 @@ export function ConversationScreen({ navigation, route }: Props) {
   }
 
   async function loadMessages(options?: { refresh?: boolean; silent?: boolean }) {
-    const isRefresh = Boolean(options?.refresh);
-    const isSilent = Boolean(options?.silent);
-    if (isRefresh) {
-      if (!isSilent) {
-        setIsRefreshing(true);
-      }
-    } else {
-      setIsLoading(true);
-    }
-    if (!isSilent) {
-      setError(null);
-    }
-
-    if (!session?.user?.id) {
-      setMessages([]);
-      setIsLoading(false);
-      setIsRefreshing(false);
-      return;
-    }
-
-    try {
-      const rows = await listMessages(route.params.matchId, session.user.id);
-      setMessages(rows);
-      void markConversationRead(route.params.matchId, session.user.id);
-    } catch (e) {
-      if (!isSilent) {
-        setError(toUserFacingError(e, "Failed to load messages."));
-      }
-    } finally {
-      setIsLoading(false);
-      if (!isSilent) {
-        setIsRefreshing(false);
-      }
-    }
+    await history.refresh(Boolean(options?.silent));
   }
 
   useEffect(() => {
-    async function load() {
-      await loadMessages();
-    }
-
-    void load().catch(() => undefined);
-  }, [route.params.matchId, session?.user?.id]);
-
-  useEffect(() => {
-    if (visibleMessages.length === 0) {
+    if (visibleMessages.length === 0 || history.isLoadingOlder) {
       return;
     }
     scrollToLatest(false);
   }, [route.params.matchId]);
 
   useEffect(() => {
-    if (visibleMessages.length === 0) {
+    if (visibleMessages.length === 0 || history.isLoadingOlder) {
       return;
     }
     scrollToLatest(false);
-  }, [visibleMessages.length]);
+  }, [latestMessageId]);
 
   useEffect(() => {
     let active = true;
@@ -197,12 +164,16 @@ export function ConversationScreen({ navigation, route }: Props) {
       .on(
         "postgres_changes",
         {
-          event: "INSERT",
+          event: "*",
           schema: "public",
           table: "messages",
           filter: `match_id=eq.${route.params.matchId}`
         },
         (payload: any) => {
+          if (payload.eventType !== "INSERT") {
+            void loadMessages({ silent: true });
+            return;
+          }
           const nextMessage: MessageItem = {
             id: payload.new.id,
             matchId: payload.new.match_id,
@@ -211,15 +182,19 @@ export function ConversationScreen({ navigation, route }: Props) {
             createdAt: payload.new.created_at
           };
 
-          setMessages((prev) => appendUniqueMessage(prev, nextMessage));
+          history.append(nextMessage);
           if (nextMessage.senderProfileId !== session.user.id) {
             void markConversationRead(route.params.matchId, session.user.id);
           }
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        realtimeConnected.current = status === "SUBSCRIBED";
+        if (status === "SUBSCRIBED") void loadMessages({ silent: true });
+      });
 
     return () => {
+      realtimeConnected.current = false;
       void supabase.removeChannel(channel);
     };
   }, [route.params.matchId, session?.user?.id]);
@@ -237,11 +212,11 @@ export function ConversationScreen({ navigation, route }: Props) {
         return;
       }
       intervalId = setInterval(() => {
-        if (appState !== "active" || isSending) {
+        if (appState !== "active" || isSending || realtimeConnected.current) {
           return;
         }
         void loadMessages({ refresh: true, silent: true });
-      }, 2500);
+      }, 15000);
     };
 
     const stopPolling = () => {
@@ -297,7 +272,7 @@ export function ConversationScreen({ navigation, route }: Props) {
         body: text,
         createdAt: new Date().toISOString()
       };
-      setMessages((prev) => [...prev, demoMessage]);
+      history.append(demoMessage);
       setDraft("");
       return;
     }
@@ -316,7 +291,7 @@ export function ConversationScreen({ navigation, route }: Props) {
       return;
     }
 
-    setMessages((prev) => appendUniqueMessage(prev, result.message));
+    history.append(result.message);
     setDraft("");
     void markConversationRead(route.params.matchId, session.user.id);
   }
@@ -503,7 +478,10 @@ export function ConversationScreen({ navigation, route }: Props) {
         alwaysBounceVertical
         bounces
         overScrollMode="always"
-        onContentSizeChange={() => scrollToLatest(false)}
+        onContentSizeChange={() => {
+          if (latestMessageId !== previousLatestId.current) scrollToLatest(false);
+          previousLatestId.current = latestMessageId;
+        }}
         refreshControl={
           <RefreshControl
             refreshing={isRefreshing}
@@ -530,10 +508,10 @@ export function ConversationScreen({ navigation, route }: Props) {
 
         {!hasRealSession ? <Text style={styles.hint}>Demo chat mode. Sign in with Supabase to use real messages.</Text> : null}
         {hasRealSession && isBlocked ? <Text style={styles.hint}>Messaging is disabled while this user is blocked.</Text> : null}
-        {error ? (
+        {error || history.error ? (
           <View style={styles.errorCard}>
             <Text style={styles.errorTitle}>Message issue</Text>
-            <Text style={styles.error}>{error}</Text>
+            <Text style={styles.error}>{error ?? toUserFacingError(history.error, "Failed to load messages.")}</Text>
             <Pressable style={styles.retryButton} onPress={() => navigation.replace("Conversation", route.params)}>
               <Text style={styles.retryButtonText}>Reload thread</Text>
             </Pressable>
@@ -547,6 +525,11 @@ export function ConversationScreen({ navigation, route }: Props) {
           </View>
         ) : null}
 
+        {history.hasOlder ? (
+          <Pressable disabled={history.isLoadingOlder} onPress={() => void history.loadOlder()} style={styles.retryButton}>
+            <Text style={styles.retryButtonText}>{history.isLoadingOlder ? "Loading older messages..." : "Load older messages"}</Text>
+          </Pressable>
+        ) : null}
         <View style={styles.threadFrame}>
           <View style={styles.thread}>
             {visibleMessages.map((message) => {
@@ -618,15 +601,6 @@ function formatTime(iso: string) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(d);
-}
-
-function appendUniqueMessage(messages: MessageItem[], nextMessage: MessageItem) {
-  const existing = messages.find((message) => message.id === nextMessage.id);
-  if (existing) {
-    return messages;
-  }
-
-  return [...messages, nextMessage].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 }
 
 const styles = StyleSheet.create({

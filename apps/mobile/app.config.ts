@@ -16,7 +16,7 @@ const config: ExpoConfig = {
   slug: "r4v3",
   owner: "r4v3",
   scheme: "r4v3",
-  version: "0.1.1",
+  version: "0.1.2",
   runtimeVersion: {
     policy: "appVersion"
   },

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, Share, StyleSheet, Text, View } from "react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -222,6 +222,23 @@ export function EventDetailScreen({ route, navigation }: Props) {
     }
   }
 
+  async function handleSharePress() {
+    try {
+      const venue = event.venueName?.trim() || "TBA";
+      const city = event.city?.trim() || "TBA";
+      const message = [
+        `Check out this event on R4V3: ${event.title}`,
+        heroDateLong,
+        `${venue} • ${city}`,
+        sourceUrl ?? "Open R4V3 to see the full event details."
+      ].join("\n");
+
+      await Share.share({ message });
+    } catch {
+      Alert.alert("Share unavailable", "Couldn’t open the share sheet right now.");
+    }
+  }
+
   return (
     <View style={styles.screen}>
       <Pressable
@@ -318,6 +335,15 @@ export function EventDetailScreen({ route, navigation }: Props) {
               </Text>
             </Pressable>
           </View>
+
+          <Pressable style={styles.shareButton} onPress={() => void handleSharePress()}>
+            <Text style={styles.shareButtonIcon}>↗</Text>
+            <View style={styles.shareButtonBody}>
+              <Text style={styles.shareButtonTitle}>Share Event</Text>
+              <Text style={styles.shareButtonText}>Send this event to someone else to check out.</Text>
+            </View>
+            <Text style={styles.shareButtonCaret}>›</Text>
+          </Pressable>
 
           {showCrewPrompt ? (
             <View style={styles.softPromptCard}>
@@ -773,6 +799,47 @@ const styles = StyleSheet.create({
   },
   crewToggleTextActive: {
     color: "#FF9E6E"
+  },
+  shareButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    minHeight: 56,
+    marginTop: 2,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(12,12,14,0.98)",
+    paddingHorizontal: 14,
+    paddingVertical: 12
+  },
+  shareButtonIcon: {
+    width: 24,
+    color: "#FFB07B",
+    fontSize: 18,
+    fontWeight: "800",
+    textAlign: "center"
+  },
+  shareButtonBody: {
+    flex: 1,
+    gap: 2
+  },
+  shareButtonTitle: {
+    color: "#FFF8EE",
+    fontSize: 13,
+    fontWeight: "800"
+  },
+  shareButtonText: {
+    color: "rgba(255,249,239,0.56)",
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "600"
+  },
+  shareButtonCaret: {
+    color: "rgba(255,249,239,0.38)",
+    fontSize: 20,
+    lineHeight: 20,
+    fontWeight: "700"
   },
   softPromptCard: {
     borderRadius: 14,

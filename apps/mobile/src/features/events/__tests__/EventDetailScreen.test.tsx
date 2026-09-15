@@ -1,4 +1,5 @@
 import React from "react";
+import { Share } from "react-native";
 import { fireEvent, render, waitFor } from "@testing-library/react-native";
 
 import { EventDetailScreen } from "../EventDetailScreen";
@@ -29,6 +30,16 @@ jest.mock("../../../app/AppProvider", () => ({
 jest.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => mockUseSafeAreaInsets()
 }));
+
+jest.mock("react-native", () => {
+  const actual = jest.requireActual("react-native");
+  return {
+    ...actual,
+    Share: {
+      share: jest.fn()
+    }
+  };
+});
 
 jest.mock("../../../components/RemoteImage", () => ({
   RemoteImage: () => null
@@ -104,6 +115,7 @@ describe("EventDetailScreen", () => {
     mockListEventAttendeePreview.mockResolvedValue([]);
     mockHasEventCrewChat.mockResolvedValue(false);
     mockGetEventSourceUrl.mockResolvedValue(null);
+    (Share.share as jest.Mock).mockResolvedValue({ action: "sharedAction" } as any);
   });
 
   it("writes RSVP changes for a signed-in user", async () => {
@@ -220,6 +232,38 @@ describe("EventDetailScreen", () => {
       expect(screen.getByText("Location")).toBeOnTheScreen();
       expect(screen.getByText("TBA (revealed day of event)")).toBeOnTheScreen();
       expect(screen.queryByText("City")).toBeNull();
+    });
+  });
+
+  it("opens the native share sheet with event details", async () => {
+    const navigation = {
+      navigate: jest.fn(),
+      goBack: jest.fn(),
+      canGoBack: () => true,
+      getParent: () => null
+    } as any;
+
+    mockGetEventSourceUrl.mockResolvedValue("https://example.com/events/warehouse-pulse");
+
+    const screen = render(
+      <EventDetailScreen
+        navigation={navigation}
+        route={{ key: "EventDetail", name: "EventDetail", params: { event } } as any}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Share Event")).toBeOnTheScreen();
+    });
+
+    fireEvent.press(screen.getByText("Share Event"));
+
+    await waitFor(() => {
+      expect(Share.share).toHaveBeenCalledTimes(1);
+      const payload = (Share.share as jest.Mock).mock.calls[0]?.[0] as { message: string };
+      expect(payload.message).toContain("Check out this event on R4V3: Warehouse Pulse");
+      expect(payload.message).toContain("District 9 • Los Angeles");
+      expect(payload.message).toContain("https://example.com/events/warehouse-pulse");
     });
   });
 

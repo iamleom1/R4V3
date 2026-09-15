@@ -34,22 +34,54 @@ type CuratedEventRow = {
   is_hidden: boolean;
 };
 
+const CURATION_PAGE_SIZE = 200;
+
 export async function listCuratedEvents(includePast = false) {
   const supabase = getSupabaseClient();
   if (!supabase) {
     return [];
   }
 
-  const { data, error } = await (supabase.rpc as any)("list_curated_events", {
-    p_include_past: includePast,
-    p_limit: 100
-  });
+  const rows: CuratedEventRow[] = [];
+  let offset = 0;
 
-  if (error || !Array.isArray(data)) {
-    return [];
+  while (true) {
+    const { data, error } = await (supabase.rpc as any)("list_curated_events", {
+      p_include_past: includePast,
+      p_limit: CURATION_PAGE_SIZE,
+      p_offset: offset
+    });
+
+    if (error || !Array.isArray(data)) {
+      if (offset > 0) {
+        break;
+      }
+
+      const legacyResult = await (supabase.rpc as any)("list_curated_events", {
+        p_include_past: includePast,
+        p_limit: CURATION_PAGE_SIZE
+      });
+
+      if (legacyResult.error || !Array.isArray(legacyResult.data)) {
+        return [];
+      }
+
+      return (legacyResult.data as CuratedEventRow[]).map(mapCuratedEventRow);
+    }
+
+    rows.push(...(data as CuratedEventRow[]));
+    if (data.length < CURATION_PAGE_SIZE) {
+      break;
+    }
+
+    offset += data.length;
   }
 
-  return (data as CuratedEventRow[]).map((row) => ({
+  return rows.map(mapCuratedEventRow);
+}
+
+function mapCuratedEventRow(row: CuratedEventRow): CuratedEvent {
+  return {
     eventId: row.event_id,
     title: row.title,
     venueName: row.venue_name,
@@ -64,7 +96,7 @@ export async function listCuratedEvents(includePast = false) {
     curationNote: row.curation_note,
     flyerUrl: row.flyer_url,
     isHidden: Boolean(row.is_hidden)
-  }));
+  };
 }
 
 export async function upsertCuratedEvent(input: {
@@ -127,12 +159,34 @@ export async function setCuratedEventHiddenGlobally(eventId: string, isHidden: b
     p_is_hidden: isHidden
   });
 
-  if (error || !Array.isArray(data)) {
-    return { ok: false as const, error: error?.message ?? "Failed to update event visibility." };
+  if (!error) {
+    const rows = Array.isArray(data) ? data : data ? [data] : [];
+    return {
+      ok: true as const,
+      updatedEventIds: rows.map((row: { event_id?: string | null }) => row.event_id).filter(Boolean) as string[]
+    };
+  }
+
+  if (!isMissingHideRpcError(error)) {
+    return { ok: false as const, error: error.message ?? "Failed to update event visibility." };
+  }
+
+  const { data: fallbackData, error: fallbackError } = await (supabase.rpc as any)("upsert_curated_event", {
+    p_event_id: eventId,
+    p_is_hidden: isHidden
+  });
+
+  if (fallbackError || !Array.isArray(fallbackData) || fallbackData.length === 0) {
+    return { ok: false as const, error: fallbackError?.message ?? "Failed to update event visibility." };
   }
 
   return {
     ok: true as const,
-    updatedEventIds: data.map((row: { event_id?: string | null }) => row.event_id).filter(Boolean) as string[]
+    updatedEventIds: fallbackData.map((row: { event_id: string }) => row.event_id)
   };
+}
+
+function isMissingHideRpcError(error: { message?: string | null; code?: string | null }) {
+  const message = `${error.code ?? ""} ${error.message ?? ""}`.toLowerCase();
+  return message.includes("moderator_set_event_hidden_globally") && message.includes("schema cache");
 }
