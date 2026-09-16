@@ -22,22 +22,29 @@ export function AdminAnalyticsScreen() {
   const [recentErrors, setRecentErrors] = useState<RecentClientError[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   async function load(refresh = false) {
     if (refresh) setIsRefreshing(true);
     else setIsLoading(true);
 
-    const [nextSnapshot, nextTopEvents, nextRecentErrors] = await Promise.all([
-      getAdminAnalyticsSnapshot(windowHours),
-      listAdminTopEvents(windowHours, 8),
-      listAdminRecentErrors(windowHours, 8)
-    ]);
+    setLoadError(null);
+    try {
+      const [nextSnapshot, nextTopEvents, nextRecentErrors] = await Promise.all([
+        getAdminAnalyticsSnapshot(windowHours),
+        listAdminTopEvents(windowHours, 8),
+        listAdminRecentErrors(windowHours, 8)
+      ]);
 
-    setSnapshot(nextSnapshot);
-    setTopEvents(nextTopEvents);
-    setRecentErrors(nextRecentErrors);
-    setIsLoading(false);
-    setIsRefreshing(false);
+      setSnapshot(nextSnapshot);
+      setTopEvents(nextTopEvents);
+      setRecentErrors(nextRecentErrors);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Analytics could not be loaded.");
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
+    }
   }
 
   useEffect(() => {
@@ -70,6 +77,16 @@ export function AdminAnalyticsScreen() {
         <View style={styles.loadingRow}>
           <ActivityIndicator color={theme.colors.accent} />
           <Text style={styles.loadingText}>Loading analytics...</Text>
+        </View>
+      ) : null}
+
+      {loadError ? (
+        <View style={styles.errorCard}>
+          <Text style={styles.errorTitle}>Analytics unavailable</Text>
+          <Text style={styles.errorText}>{loadError}</Text>
+          <Pressable style={styles.retryButton} onPress={() => void load()}>
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </Pressable>
         </View>
       ) : null}
 
@@ -257,5 +274,32 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     color: theme.colors.textSecondary
+  },
+  errorCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(255,140,132,0.4)",
+    backgroundColor: "rgba(255,140,132,0.08)",
+    padding: 14,
+    gap: 8
+  },
+  errorTitle: {
+    color: "#FF8C84",
+    fontWeight: "800"
+  },
+  errorText: {
+    color: theme.colors.textSecondary,
+    ...theme.type.caption
+  },
+  retryButton: {
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    backgroundColor: theme.colors.accentSoft,
+    paddingHorizontal: 12,
+    paddingVertical: 8
+  },
+  retryButtonText: {
+    color: theme.colors.textPrimary,
+    fontWeight: "700"
   }
 });

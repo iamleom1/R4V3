@@ -11,10 +11,13 @@ export async function trackEvent(eventName: string, properties: Record<string, u
   }
 
   try {
-    await (supabase.rpc as any)("track_client_event", {
+    const { error } = await (supabase.rpc as any)("track_client_event", {
       p_event_name: eventName,
       p_properties: properties
     });
+    if (error && __DEV__) {
+      console.warn("Analytics event was not recorded:", error.message);
+    }
   } catch {
     // Avoid user-facing failures from analytics.
   }
@@ -30,12 +33,15 @@ export async function recordError(error: unknown, context: Record<string, unknow
   const stack = error instanceof Error ? error.stack ?? null : null;
 
   try {
-    await (supabase.rpc as any)("record_client_error", {
+    const { error: reportingError } = await (supabase.rpc as any)("record_client_error", {
       p_message: message,
       p_stack: stack,
       p_context: context,
       p_is_fatal: isFatal
     });
+    if (reportingError && __DEV__) {
+      console.warn("Client error report was not recorded:", reportingError.message);
+    }
   } catch {
     // Avoid recursive failures from error reporting.
   }

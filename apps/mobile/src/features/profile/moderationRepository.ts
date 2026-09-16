@@ -322,7 +322,7 @@ export async function resolveSystemAlert(alertId: string) {
 export async function getAdminAnalyticsSnapshot(windowHours = 24): Promise<AnalyticsSnapshot | null> {
   const supabase = getSupabaseClient();
   if (!supabase) {
-    return null;
+    throw new Error("Supabase is not configured.");
   }
 
   const { data, error } = await (supabase.rpc as any)("get_admin_analytics_snapshot", {
@@ -330,8 +330,11 @@ export async function getAdminAnalyticsSnapshot(windowHours = 24): Promise<Analy
   });
 
   const row = (Array.isArray(data) ? data[0] : data) as AnalyticsSnapshotRow | null;
-  if (error || !row) {
-    return null;
+  if (error) {
+    throw new Error(error.message);
+  }
+  if (!row) {
+    throw new Error("No analytics snapshot was returned.");
   }
 
   return {
@@ -349,7 +352,7 @@ export async function getAdminAnalyticsSnapshot(windowHours = 24): Promise<Analy
 export async function listAdminTopEvents(windowHours = 24, limit = 8): Promise<TopAnalyticsEvent[]> {
   const supabase = getSupabaseClient();
   if (!supabase) {
-    return [];
+    throw new Error("Supabase is not configured.");
   }
 
   const { data, error } = await (supabase.rpc as any)("list_admin_top_events", {
@@ -357,8 +360,11 @@ export async function listAdminTopEvents(windowHours = 24, limit = 8): Promise<T
     p_limit: limit
   });
 
-  if (error || !Array.isArray(data)) {
-    return [];
+  if (error) {
+    throw new Error(error.message);
+  }
+  if (!Array.isArray(data)) {
+    throw new Error("No analytics event list was returned.");
   }
 
   return (data as TopAnalyticsEventRow[]).map((row) => ({
@@ -372,7 +378,7 @@ export async function listAdminTopEvents(windowHours = 24, limit = 8): Promise<T
 export async function listAdminRecentErrors(windowHours = 24, limit = 8): Promise<RecentClientError[]> {
   const supabase = getSupabaseClient();
   if (!supabase) {
-    return [];
+    throw new Error("Supabase is not configured.");
   }
 
   const { data, error } = await (supabase.rpc as any)("list_admin_recent_errors", {
@@ -380,8 +386,11 @@ export async function listAdminRecentErrors(windowHours = 24, limit = 8): Promis
     p_limit: limit
   });
 
-  if (error || !Array.isArray(data)) {
-    return [];
+  if (error) {
+    throw new Error(error.message);
+  }
+  if (!Array.isArray(data)) {
+    throw new Error("No client error list was returned.");
   }
 
   return (data as RecentClientErrorRow[]).map((row) => ({
