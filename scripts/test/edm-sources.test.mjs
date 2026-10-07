@@ -8,6 +8,7 @@ import { analyzeEventQuality } from "../lib/event-quality.mjs";
 import { deriveGenreTags } from "../lib/source-shared.mjs";
 import { extractDiceEventFromEventPage, mapDiceEvent, regionMatchesDiceEvent } from "../sources/dice.mjs";
 import { mapPoshMarketplaceEvent } from "../sources/posh.mjs";
+import { extractInsomniacEvent, mapInsomniacEvent } from "../sources/insomniac.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixturesDir = path.join(__dirname, "fixtures");
@@ -29,6 +30,21 @@ const poshRegion = {
   lat: 33.7175,
   lon: -117.8311
 };
+
+test("Insomniac parser keeps Los Angeles-area events and rejects featured events elsewhere", () => {
+  const eventHtml = `<script type="application/ld+json">${JSON.stringify({
+    "@type": "Event", name: "Factory 93", startDate: "2099-10-16T22:00:00-07:00",
+    location: { name: "NOS Event Center", address: { addressLocality: "San Bernardino,", addressRegion: "CA", addressCountry: "US" } },
+    image: ["https://example.com/square.jpg", "https://example.com/flyer.jpg"], description: "Techno festival"
+  })}</script>`;
+  const raw = extractInsomniacEvent(eventHtml, "https://www.insomniac.com/events/factory-93/");
+  const event = mapInsomniacEvent(raw, Date.parse("2099-01-01"));
+  assert.equal(event.city, "San Bernardino");
+  assert.equal(event.provider, "insomniac");
+  assert.equal(event.flyerUrl, "https://example.com/flyer.jpg");
+  assert.ok(event.genreTags.includes("techno"));
+  assert.equal(mapInsomniacEvent({ ...raw, location: { address: { addressLocality: "Miami" } } }, Date.parse("2099-01-01")), null);
+});
 
 test("DICE event-page parser extracts and normalizes an EDM event", async () => {
   const html = await readFile(path.join(fixturesDir, "dice-event-page.html"), "utf8");

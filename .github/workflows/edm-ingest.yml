@@ -12,6 +12,7 @@ jobs:
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      EDM_SCRAPER_SOURCES: "dice,posh,insomniac"
       EDM_LOG_RETENTION_DAYS: "14"
     steps:
       - name: Checkout
