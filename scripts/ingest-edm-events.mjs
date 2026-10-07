@@ -14,6 +14,7 @@ import {
 } from "./lib/source-shared.mjs";
 import { scrapeDicePromoters, scrapeDiceRegions } from "./sources/dice.mjs";
 import { scrapePoshPromoters, scrapePoshRegions } from "./sources/posh.mjs";
+import { scrapeInsomniacEvents } from "./sources/insomniac.mjs";
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -35,7 +36,7 @@ const REQUEST_TIMEOUT_MS = 30000;
 const POSH_LIMIT_PER_REGION = clampInteger(process.env.POSH_LIMIT_PER_REGION, 60, 1, 100);
 const POSH_WHENS = parseCsvList(process.env.POSH_WHENS || "This Week,This Month");
 const DICE_REGIONS = parseDiceRegions(process.env.DICE_REGIONS_JSON);
-const ENABLED_SOURCES = parseCsv(process.env.EDM_SCRAPER_SOURCES || "dice,posh");
+const ENABLED_SOURCES = parseCsv(process.env.EDM_SCRAPER_SOURCES || "dice,posh,insomniac");
 const DRY_RUN = (process.env.DRY_RUN || "false").toLowerCase() === "true";
 const POSH_PROMOTERS_ONLY = (process.env.POSH_PROMOTERS_ONLY || "false").toLowerCase() === "true";
 const PROMOTERS_ONLY = (process.env.PROMOTERS_ONLY ?? String(POSH_PROMOTERS_ONLY)).toLowerCase() === "true";
@@ -61,6 +62,9 @@ async function main() {
     const promoterSources = admin && (ENABLED_SOURCES.has("dice") || ENABLED_SOURCES.has("posh"))
       ? await loadPromoterSources(admin)
       : [];
+    if (ENABLED_SOURCES.has("insomniac") && !PROMOTERS_ONLY) {
+      scraped.push(...(await scrapeInsomniacEvents({ fetchText: (url) => fetchText(url, fetchOptions) })));
+    }
     if (!admin && (ENABLED_SOURCES.has("dice") || ENABLED_SOURCES.has("posh"))) {
       if (PROMOTERS_ONLY) throw new Error("Promoter dry runs require Supabase credentials to read approved sources");
       console.warn("[promoters] skipping database promoter sources: no Supabase credentials (dry run)");
