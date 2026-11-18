@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { analyzeEventQuality } from "../lib/event-quality.mjs";
 import { deriveGenreTags } from "../lib/source-shared.mjs";
-import { extractDiceEventFromEventPage, mapDiceEvent, regionMatchesDiceEvent } from "../sources/dice.mjs";
+import { extractDiceEventFromEventPage, mapDiceEvent, regionMatchesDiceEvent, scrapeDiceRegions } from "../sources/dice.mjs";
 import { mapPoshMarketplaceEvent } from "../sources/posh.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -101,4 +101,56 @@ test("genre derivation captures hard techno and afters labels", () => {
   assert.ok(tags.includes("hard techno"));
   assert.ok(tags.includes("afters"));
   assert.ok(tags.includes("rave"));
+});
+
+test("DICE mapper rejects Gigs events even when their text contains EDM keywords", () => {
+  const normalized = mapDiceEvent(
+    {
+      id: "dice_gig_1",
+      name: "House Band at The Glass House",
+      dates: { event_start_date: "2026-11-20T04:00:00.000Z" },
+      venues: [{ name: "The Glass House", city: { name: "Pomona" } }],
+      about: { description: "A rock concert at the Glass House" },
+      tags: [{ name: "Gigs" }, { name: "Rock" }]
+    },
+    { city: "Los Angeles", region: "CA", country: "US" }
+  );
+
+  assert.equal(normalized, null);
+});
+
+test("DICE scraper skips the unfiltered city page when DICE identifies it as Gigs", async () => {
+  const nextData = {
+    props: {
+      pageProps: {
+        primaryFilterSlug: "music:gigs",
+        events: [
+          {
+            id: "dice_gig_2",
+            name: "House Music From The Feature Film",
+            dates: { event_start_date: "2026-11-20T04:00:00.000Z" },
+            venues: [{ name: "The Mint", city: { name: "Los Angeles" } }],
+            about: { description: "Live band performance" }
+          }
+        ],
+        primaryFilters: [],
+        secondaryFilters: []
+      }
+    }
+  };
+  const html = `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify(nextData)}</script>`;
+  const events = await scrapeDiceRegions({
+    regions: [
+      {
+        name: "Los Angeles",
+        browseUrl: "https://dice.fm/browse/los-angeles",
+        city: "Los Angeles",
+        region: "CA",
+        country: "US"
+      }
+    ],
+    fetchText: async () => html
+  });
+
+  assert.deepEqual(events, []);
 });

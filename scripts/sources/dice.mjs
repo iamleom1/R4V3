@@ -7,6 +7,7 @@ import {
 } from "../lib/source-shared.mjs";
 
 const DICE_BASE_URL = "https://dice.fm";
+const DICE_EXCLUDED_BROAD_CATEGORIES = new Set(["gig", "gigs", "concert", "concerts"]);
 const DICE_PRIMARY_FILTER_ALLOWLIST = new Set(["dj", "party"]);
 const DICE_SECONDARY_FILTER_KEYWORDS = [
   "afrohouse",
@@ -66,10 +67,16 @@ export async function scrapeDiceRegions({ regions, fetchText }) {
       continue;
     }
 
-    for (const rawEvent of basePage.pageEvents) {
-      const normalized = mapDiceEvent(rawEvent, region, { browseHints: [] });
-      if (normalized) {
-        events.push(normalized);
+    const basePageHints = collectDicePageCategoryHints(basePage.pageProps);
+    if (!isExcludedDiceBrowseCategory(basePageHints, region.browseUrl)) {
+      for (const rawEvent of basePage.pageEvents) {
+        const normalized = mapDiceEvent(rawEvent, region, {
+          browseHints: basePageHints,
+          sourceUrl: region.browseUrl
+        });
+        if (normalized) {
+          events.push(normalized);
+        }
       }
     }
 
@@ -79,6 +86,10 @@ export async function scrapeDiceRegions({ regions, fetchText }) {
     ];
 
     for (const target of extraTargets) {
+      if (isExcludedDiceBrowseCategory(target.hints, target.url)) {
+        continue;
+      }
+
       const page = await loadDiceBrowsePage(target.url, fetchText);
       if (!page) {
         continue;
@@ -95,6 +106,10 @@ export async function scrapeDiceRegions({ regions, fetchText }) {
       }
 
       for (const secondaryTarget of collectDiceSecondaryFilterTargets(page.pageProps)) {
+        if (isExcludedDiceBrowseCategory(secondaryTarget.hints, secondaryTarget.url)) {
+          continue;
+        }
+
         const secondaryPage = await loadDiceBrowsePage(secondaryTarget.url, fetchText);
         if (!secondaryPage) {
           continue;
@@ -133,12 +148,20 @@ export function mapDiceEvent(rawEvent, region, context = {}) {
   const venueAddress = stringOrNull(venue?.address);
   const city = extractCityFromAddress(venueAddress) ?? stringOrNull(venue?.city?.name) ?? region.city;
   const browseHints = Array.isArray(context?.browseHints) ? context.browseHints.filter(Boolean) : [];
+  const eventTags = Array.isArray(rawEvent?.tags)
+    ? rawEvent.tags.map((tag) => stringOrNull(tag?.name)).filter(Boolean)
+    : [];
+
+  if (isExcludedDiceBrowseCategory([...browseHints, ...eventTags], context?.sourceUrl)) {
+    return null;
+  }
+
   const text = [
     title,
     rawEvent?.about?.description,
     rawEvent?.presented_by,
     venue?.name,
-    rawEvent?.tags?.map?.((tag) => tag?.name).join(" "),
+    eventTags.join(" "),
     browseHints.join(" ")
   ]
     .filter(Boolean)
@@ -216,6 +239,27 @@ function selectDicePrimaryFilterTargets(pageProps) {
       hints: [stringOrNull(filter?.name)].filter(Boolean)
     }))
     .filter((target) => target.url);
+}
+
+function collectDicePageCategoryHints(pageProps) {
+  return [
+    stringOrNull(pageProps?.primaryFilterSlug)?.replace(/^music:/, ""),
+    stringOrNull(pageProps?.primaryFilter?.name),
+    stringOrNull(pageProps?.selectedPrimaryFilter?.name),
+    stringOrNull(pageProps?.activePrimaryFilter?.name)
+  ].filter(Boolean);
+}
+
+function isExcludedDiceBrowseCategory(hints, sourceUrl) {
+  const normalizedHints = Array.isArray(hints)
+    ? hints.map((hint) => String(hint).trim().toLowerCase())
+    : [];
+  if (normalizedHints.some((hint) => DICE_EXCLUDED_BROAD_CATEGORIES.has(hint))) {
+    return true;
+  }
+
+  const normalizedUrl = String(sourceUrl ?? "").toLowerCase();
+  return /(?:music%3a|music:|\/)(?:gigs?|concerts?)(?:[/?&#]|$)/.test(normalizedUrl);
 }
 
 function collectDiceSecondaryFilterTargets(pageProps) {
