@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 15
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      EVENT_INGEST_CRON_SECRET: ${{ secrets.EVENT_INGEST_CRON_SECRET }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       TICKETMASTER_INGEST_CITY: ${{ vars.TICKETMASTER_INGEST_CITY || 'Los Angeles' }}
       TICKETMASTER_INGEST_COUNTRY_CODE: ${{ vars.TICKETMASTER_INGEST_COUNTRY_CODE || 'US' }}
       TICKETMASTER_INGEST_DAYS_AHEAD: ${{ vars.TICKETMASTER_INGEST_DAYS_AHEAD || '30' }}
@@ -23,6 +23,6 @@ jobs:
         run: |
           curl --fail-with-body --show-error --silent \
             -X POST "${SUPABASE_URL}/functions/v1/ingest-events" \
-            -H "Authorization: Bearer ${EVENT_INGEST_CRON_SECRET}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
             -H "Content-Type: application/json" \
             -d "{\"city\":\"${TICKETMASTER_INGEST_CITY}\",\"countryCode\":\"${TICKETMASTER_INGEST_COUNTRY_CODE}\",\"daysAhead\":${TICKETMASTER_INGEST_DAYS_AHEAD},\"size\":${TICKETMASTER_INGEST_SIZE},\"radiusMiles\":${TICKETMASTER_INGEST_RADIUS_MILES},\"keyword\":\"${TICKETMASTER_INGEST_KEYWORD}\"}"
