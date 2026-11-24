@@ -1,5 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+import { allowedDiscoveryGenres, hasOffGenreEvidence } from "../_shared/discovery-genres.mjs";
+
 type TicketmasterClassification = {
   segment?: { name?: string };
   genre?: { name?: string };
@@ -135,7 +137,6 @@ Deno.serve(async (req) => {
       .map(mapTicketmasterEvent)
       .filter((event): event is { providerEventId: string; row: EventInsert; raw: TicketmasterEvent } => Boolean(event))
       .filter((event) => isSupportedDiscoveryCity(event.row.city))
-      .filter((event) => isEdmDiscoveryEvent(event.row))
       .sort((a, b) => scoreEvent(b.row) - scoreEvent(a.row));
 
     const admin = createClient(supabaseUrl, serviceRoleKey, {
@@ -331,7 +332,11 @@ function mapTicketmasterEvent(event: TicketmasterEvent): { providerEventId: stri
   }
 
   const venue = event._embedded?.venues?.[0];
-  const genreTags = deriveGenres(event);
+  const providerGenres = deriveGenres(event);
+  const genreTags = allowedDiscoveryGenres(providerGenres);
+  if (!genreTags.length || hasOffGenreEvidence([title, ...providerGenres].join(" "))) {
+    return null;
+  }
 
   return {
     providerEventId,
@@ -385,56 +390,6 @@ function deriveGenres(event: TicketmasterEvent) {
   return Array.from(tags).slice(0, 8);
 }
 
-const EDM_DISCOVERY_KEYWORDS = [
-  "edm",
-  "rave",
-  "electronic",
-  "dance/electronic",
-  "dj",
-  "house",
-  "tech house",
-  "progressive house",
-  "afro house",
-  "techno",
-  "melodic techno",
-  "dubstep",
-  "drum and bass",
-  "dnb",
-  "trance",
-  "hardstyle",
-  "bass",
-  "future bass",
-  "trap",
-  "uk garage",
-  "garage",
-  "breakbeat",
-  "electro"
-];
-
-const NON_EDM_EXCLUSION_KEYWORDS = [
-  "comedy",
-  "podcast",
-  "worship",
-  "ballet",
-  "orchestra",
-  "symphony",
-  "musical",
-  "broadway",
-  "play",
-  "opera",
-  "latin",
-  "mariachi",
-  "country",
-  "folk",
-  "children",
-  "tribute"
-];
-
-function isEdmOrRaveEvent(event: EventInsert) {
-  const text = `${event.title} ${event.venue_name ?? ""} ${event.genre_tags.join(" ")}`.toLowerCase();
-  return EDM_DISCOVERY_KEYWORDS.some((keyword) => text.includes(keyword));
-}
-
 function scoreEvent(event: EventInsert) {
   const text = `${event.title} ${event.genre_tags.join(" ")}`.toLowerCase();
   let score = 0;
@@ -447,14 +402,6 @@ function scoreEvent(event: EventInsert) {
   if (text.includes("drum and bass") || text.includes("dnb")) score += 2;
   if (event.genre_tags.length > 0) score += 1;
   return score;
-}
-
-function isEdmDiscoveryEvent(event: EventInsert) {
-  const text = `${event.title} ${event.venue_name ?? ""} ${event.genre_tags.join(" ")}`.toLowerCase();
-  if (!isEdmOrRaveEvent(event)) {
-    return false;
-  }
-  return !NON_EDM_EXCLUSION_KEYWORDS.some((keyword) => text.includes(keyword));
 }
 
 function isSupportedDiscoveryCity(city: string | null | undefined) {

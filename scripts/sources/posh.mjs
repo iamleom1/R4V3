@@ -1,11 +1,10 @@
 import {
-  deriveGenreTags,
   extractCityFromAddress,
-  isLikelyEdmEvent,
   normalizeIsoDate,
   providerIdFromUrl,
   stringOrNull
 } from "../lib/source-shared.mjs";
+import { hasOffGenreEvidence, marketplaceDiscoveryGenres } from "../../supabase/functions/_shared/discovery-genres.mjs";
 
 export async function scrapePoshRegions({ regions, whens, limitPerRegion, fetchJson }) {
   const events = [];
@@ -76,9 +75,9 @@ export function mapPoshMarketplaceEvent(rawEvent, region) {
   const venueAddress = stringOrNull(rawEvent?.venue?.address);
   const city = extractCityFromAddress(venueAddress) ?? region.city;
   const url = rawEvent?.url ? `https://posh.vip/e/${String(rawEvent.url).replace(/^\/+/, "")}` : null;
-  const text = [title, rawEvent?.shortDescription, venueName, venueAddress, rawEvent?.groupName].filter(Boolean).join(" ");
-
-  if (!isLikelyEdmEvent(text)) {
+  const content = [title, rawEvent?.description, rawEvent?.shortDescription].filter(Boolean).join(" ");
+  const genreTags = marketplaceDiscoveryGenres([], content);
+  if (!genreTags.length || hasOffGenreEvidence(content)) {
     return null;
   }
 
@@ -92,7 +91,7 @@ export function mapPoshMarketplaceEvent(rawEvent, region) {
     country: region.country,
     startsAt,
     endsAt: normalizeIsoDate(rawEvent?.endUtc),
-    genreTags: deriveGenreTags(text),
+    genreTags,
     flyerUrl: stringOrNull(rawEvent?.flyer),
     rawPayload: { ...rawEvent, canonicalUrl: url }
   };
