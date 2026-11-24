@@ -78,7 +78,6 @@ Deno.serve(async (req) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     const ticketmasterApiKey = Deno.env.get("TICKETMASTER_API_KEY");
-    const cronSecret = Deno.env.get("EVENT_INGEST_CRON_SECRET");
 
     if (!supabaseUrl || !serviceRoleKey || !ticketmasterApiKey) {
       return json({ error: "Server is not configured." }, 500);
@@ -86,11 +85,7 @@ Deno.serve(async (req) => {
 
     const authHeader = req.headers.get("Authorization") ?? "";
     const bearer = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-    const authorized =
-      (Boolean(cronSecret) && bearer === cronSecret) ||
-      bearer === serviceRoleKey;
-
-    if (!authorized) {
+    if (bearer !== serviceRoleKey) {
       return json({ error: "Unauthorized." }, 401);
     }
 
