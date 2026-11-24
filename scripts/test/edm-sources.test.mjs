@@ -57,7 +57,7 @@ test("POSH marketplace mapper normalizes an EDM event", async () => {
   assert.equal(normalized.city, "Costa Mesa");
   assert.equal(normalized.venueName, "Costa Mesa Warehouse");
   assert.equal(normalized.flyerUrl, "https://cdn.example.com/posh-flyer.jpg");
-  assert.ok(normalized.genreTags.includes("house"));
+  assert.ok(normalized.genreTags.includes("deep house"));
   assert.ok(normalized.genreTags.includes("techno"));
 });
 

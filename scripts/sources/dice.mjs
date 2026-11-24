@@ -1,10 +1,9 @@
 import {
-  deriveGenreTags,
   extractCityFromAddress,
   extractNextDataJson,
-  isLikelyEdmEvent,
   stringOrNull
 } from "../lib/source-shared.mjs";
+import { hasOffGenreEvidence, marketplaceDiscoveryGenres } from "../../supabase/functions/_shared/discovery-genres.mjs";
 
 const DICE_BASE_URL = "https://dice.fm";
 const DICE_EXCLUDED_BROAD_CATEGORIES = new Set(["gig", "gigs", "concert", "concerts"]);
@@ -156,18 +155,9 @@ export function mapDiceEvent(rawEvent, region, context = {}) {
     return null;
   }
 
-  const text = [
-    title,
-    rawEvent?.about?.description,
-    rawEvent?.presented_by,
-    venue?.name,
-    eventTags.join(" "),
-    browseHints.join(" ")
-  ]
-    .filter(Boolean)
-    .join(" ");
-
-  if (!isLikelyEdmEvent(text)) {
+  const content = [title, rawEvent?.about?.description].filter(Boolean).join(" ");
+  const genreTags = marketplaceDiscoveryGenres(eventTags, content);
+  if (!genreTags.length || hasOffGenreEvidence([content, ...eventTags].join(" "))) {
     return null;
   }
 
@@ -181,7 +171,7 @@ export function mapDiceEvent(rawEvent, region, context = {}) {
     country: region.country,
     startsAt,
     endsAt: stringOrNull(rawEvent?.dates?.event_end_date),
-    genreTags: deriveGenreTags(text),
+    genreTags,
     musicPreviewUrl: selectDiceMusicPreviewUrl(rawEvent),
     flyerUrl:
       stringOrNull(rawEvent?.images?.portrait) ??
