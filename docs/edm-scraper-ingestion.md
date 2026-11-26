@@ -4,6 +4,7 @@ This repo now includes a standalone ingestion script for external EDM listings f
 
 - `dice.fm`
 - `posh.vip`
+- `insomniac.com` (Festivals, Concerts, and Clubs in the Los Angeles/Southern California area)
 
 It writes into the existing Supabase `events` and `event_sources` tables instead of using the `ingest-events` Edge Function. This is intentional:
 
@@ -32,7 +33,7 @@ export SUPABASE_SERVICE_ROLE_KEY="<service-role-key>"
 ## Optional environment variables
 
 ```bash
-export EDM_SCRAPER_SOURCES="dice,posh"
+export EDM_SCRAPER_SOURCES="dice,posh,insomniac"
 export POSH_LIMIT_PER_REGION="60"
 export POSH_WHENS="This Week,This Month"
 export DICE_REGIONS_JSON='[{"name":"Los Angeles County","city":"Los Angeles","browseUrl":"https://dice.fm/browse/losangeles-5982e13c613de866017c3e3a?lng=en-US"},{"name":"Orange County","city":"Orange County","browseUrl":"https://dice.fm/browse/<validated-orange-county-url>"},{"name":"San Diego County","city":"San Diego","browseUrl":"https://dice.fm/browse/<validated-san-diego-url>"}]'
